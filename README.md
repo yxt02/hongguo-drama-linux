@@ -59,9 +59,9 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.73**。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.73.1**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
-| 设备 | 下载 1.73 | 安装方式 |
+| 设备 | 下载 | 安装方式 |
 |---|---|---|
 | **Linux x64（本仓库）** | [下载 tar.gz](https://github.com/yxt02/hongguo-drama-linux/releases/latest) | 解压后运行 `./红果短剧.sh`，详见上方「Linux 快速开始」 |
 | Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-arm64.dmg)（上游） | 打开 DMG，拖入「应用程序」后启动 |
@@ -318,7 +318,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-当前正式版为 **1.73**，源码配置版本为 `1.73.0`。具体安装包、签名公证与验证记录，以[对应发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.73.1**（源码配置版本 `1.73.1`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
 1.73 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
 
@@ -329,6 +329,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
+| 1.73.1（Linux） | 黑屏有声自动转 H.264；HEVC 不支持时直接转兼容格式 | [发行页](https://github.com/yxt02/hongguo-drama-linux/releases) |
 | 1.6 | 下载清晰度、本集弹幕、播放与下载恢复 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6) |
 | 1.5 | 片源兼容、播放失败恢复、全屏切集控制条优化 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.5) |
 | 1.4 | 修复合并候选混入在线播放记录、文件删除后候选残留 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.4) |

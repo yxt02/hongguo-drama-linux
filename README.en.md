@@ -253,7 +253,8 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current release is **1.73** (`1.73.0` in source). Package, signing and verification records live
+The current Linux release is **1.73.1** (`1.73.1` in source); upstream Mac/Windows builds remain at
+1.73. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
 **Linux verification** — the bundled 57-check suite passes on Ubuntu 24.04 x86-64 with the bundled
@@ -273,6 +274,7 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
+| 1.73.1 (Linux) | Auto-repair black screen with sound (H.264 fallback); transcode-first for undecodable HEVC |
 | 1.73 | Automatic transient download retries (10/30/60s) |
 | 1.72 | Auto-hide landscape controls; safer media-connection reuse |
 | 1.71 | Library download hint placement; hot-picks layout |
