@@ -9,6 +9,7 @@ const videoEnhancementStub = {
   useVideoEnhancement: () => ({ mode: 'original', strength: 50, update() {}, status: {}, setStatus() {} }),
 };
 const shortcutSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/shortcuts.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
+const decodeWatchSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/decodeWatch.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/Player.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
 
 function mount({ local = false, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
@@ -16,8 +17,25 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
   const releases = [], settingsSaved = [];
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
+  // 解码守卫的画布采样与 HEVC 能力探测：测试可控，避免真实 DOM。
+  let frameLuma = 128, hevcAnswer = 'probably';
   const listenerOptions = new Map(), mediaCalls = { play: 0, pause: 0 };
-  const document = { activeElement: null, querySelector: () => null };
+  const document = { activeElement: null, querySelector: () => null,
+    createElement: (tag) => {
+      if (tag === 'canvas') return {
+        width: 0, height: 0,
+        getContext: () => ({
+          drawImage() {},
+          getImageData: () => {
+            const data = new Uint8ClampedArray(32 * 18 * 4);
+            data.fill(Math.max(0, Math.min(255, Math.round(frameLuma))));
+            return { data };
+          },
+        }),
+      };
+      if (tag === 'video') return { canPlayType: () => hevcAnswer };
+      return { getContext: () => null };
+    } };
   let cursor = 0, tree, timerId = 0, oldSrc = '', oldKey;
   let transcodeProgress;
   const media = { currentTime: 0, duration: 100, readyState: 0, videoWidth: 640, paused: false,
@@ -67,8 +85,10 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
     dispatchEvent: event => { events.get(event.type)?.(event); return !event.defaultPrevented; } };
   const shortcutModule = { exports: {} };
   vm.runInNewContext(shortcutSource, { module: shortcutModule, exports: shortcutModule.exports, window, Event });
+  const decodeWatchModule = { exports: {} };
+  vm.runInNewContext(decodeWatchSource, { module: decodeWatchModule, exports: decodeWatchModule.exports });
   const setTimer = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
-  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
+  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === '../decodeWatch' ? decodeWatchModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
   context.exports = context.module.exports;
   vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const walk = n => { if (!n || typeof n !== 'object') return; out.push(n); n.children?.forEach(walk); }; walk(tree); return out; };
@@ -99,6 +119,9 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   render();
   return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
     releases, settingsSaved,
+    setFrameLuma: value => { frameLuma = value; }, setHevcAnswer: value => { hevcAnswer = value; },
+    // 驱动解码守卫采样一次（按采样周期排定的定时器）。
+    decodeTick: () => { const timer = [...timers.values()].find(t => t.delay === 900); timer?.fn(); return !!timer; },
     flushBatched: async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); render(); },
     transcodeProgress: payload => transcodeProgress?.(payload),
     button: label => find(n => n.type === 'button' && text(n).includes(label)),

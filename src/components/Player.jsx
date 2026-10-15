@@ -3,6 +3,7 @@ import useDialogKeyboard from './useDialogKeyboard';
 import PlayerControls from './PlayerControls';
 import CommentDanmaku, { useCommentDanmaku } from './CommentDanmaku';
 import { SHORTCUT_ACTIONS, formatShortcut, ignoresPlaybackShortcut, readShortcuts, shortcutKey, subscribeShortcuts } from '../shortcuts';
+import { SAMPLE_INTERVAL_MS, createDecodeGuard, createFrameSampler, isHevcCodec, probeHevcSupport, shouldTranscodeFirst } from '../decodeWatch';
 import CommunityPanel from './CommunityPanel';
 import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
 import './Player.css';
@@ -95,7 +96,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   const prefetchRef = useRef(null);
   const mediaVersion = useRef(0);
   const compatRequestRef = useRef(null);
-  const decodeTimer = useRef(null);
+  const decodeWatchRef = useRef(null); // { timer, guard, sampler } —— 播放中解码守卫
+  const mediaCodecRef = useRef('');   // 当前片源编码；未知时按可能不兼容处理
   const pendingTargetRef = useRef(null);
   const loadedMediaRef = useRef(null);
   const autoCompatAttemptRef = useRef(null);
@@ -144,6 +146,13 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     }
   }, []);
 
+  // 停掉播放中的解码守卫（切集、转码、卸载时调用）。
+  const stopDecodeWatch = useCallback(() => {
+    const watch = decodeWatchRef.current;
+    decodeWatchRef.current = null;
+    if (watch) clearInterval(watch.timer);
+  }, []);
+
   const resetPlayback = useCallback((autoplay = true) => {
     fallbackRef.current = null;
     pendingAutoplayRef.current = autoplay;
@@ -155,7 +164,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     mediaVersion.current++;
     setPlaybackVersion(mediaVersion.current);
     autoCompatAttemptRef.current = null;
-    clearTimeout(decodeTimer.current);
+    mediaCodecRef.current = '';
+    stopDecodeWatch();
     cancelCompat();
     releaseOnline();
     releasePrefetch();
@@ -168,7 +178,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     setCompatError('');
     setPlaybackError('');
     lastSavedRef.current = 0;
-  }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch]);
+  }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch, stopDecodeWatch]);
 
   const stopPlayback = (message = '播放已停止，可重试本集继续观看') => {
     const seekTo = currentPosition();
@@ -186,9 +196,9 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     cancelCompat();
     releaseOnline();
     releasePrefetch();
-    clearTimeout(decodeTimer.current);
+    stopDecodeWatch();
     clearTimeout(toastTimer.current);
-  }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch]);
+  }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch, stopDecodeWatch]);
 
   const showToast = useCallback((text) => {
     setToast(text);
@@ -486,6 +496,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       const request = { requestId: crypto.randomUUID(), seriesId: String(activeSeriesId), vidIndex, version: mediaVersion.current };
       if (compatRequestRef.current?.version === request.version && compatRequestRef.current?.vidIndex === vidIndex) return;
       autoCompatAttemptRef.current = { version: request.version, force };
+      stopDecodeWatch();
+      mediaCodecRef.current = 'h264'; // 转码输出固定 H.264，避免对兼容片源再次误判黑屏
       pendingSeekRef.current = currentPosition();
       if (loadedMediaRef.current) pendingAutoplayRef.current = !loadedMediaRef.current.element.paused;
       fallbackRef.current = null;
@@ -548,7 +560,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         showToast('转码异常: ' + e.message);
       }
     },
-    [episodes, activeSeriesId, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition, recoverOnlineFailure]
+    [episodes, activeSeriesId, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition, recoverOnlineFailure, stopDecodeWatch]
   );
 
   const tryAutoCompat = useCallback((vidIndex) => {
@@ -558,6 +570,40 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     if (attempt?.version === mediaVersion.current && (!force || attempt.force)) return;
     startCompatPlay(vidIndex, force);
   }, [autoCompat, compatMap, startCompatPlay]);
+
+  /**
+   * 播放中解码守卫：按周期采样画面与解码计数，自动发现
+   * 「黑屏有声」（有尺寸、音频在播但画面持续纯黑）与「解不出画面」，
+   * 命中后自动转 H.264 兼容格式 —— 不再需要手动切换。
+   * 必须定义在早返回之前 —— hooks 不能出现在条件分支之后。
+   */
+  const startDecodeWatch = useCallback((idx) => {
+    stopDecodeWatch();
+    const version = mediaVersion.current;
+    // 已知片源是 H.264 时，画面纯黑只能是内容本身，转码无益，不做黑屏判定；
+    // HEVC 或编码未知（本地文件等）才可能因解码失败而黑屏。
+    const guard = createDecodeGuard({ blackProbeEnabled: !mediaCodecRef.current || isHevcCodec(mediaCodecRef.current) });
+    const sampler = createFrameSampler(document);
+    const timer = setInterval(() => {
+      if (version !== mediaVersion.current) { stopDecodeWatch(); return; }
+      const v = videoRef.current;
+      if (!v || compatRequestRef.current) return;
+      const verdict = guard.push({
+        currentTime: v.currentTime,
+        paused: v.paused,
+        videoWidth: v.videoWidth,
+        videoDecodedBytes: typeof v.webkitVideoDecodedByteCount === 'number' ? v.webkitVideoDecodedByteCount : null,
+        audioDecodedBytes: typeof v.webkitAudioDecodedByteCount === 'number' ? v.webkitAudioDecodedByteCount : null,
+        luma: v.paused ? null : sampler.sample(v),
+      });
+      if (verdict === 'watch') return;
+      stopDecodeWatch();
+      if (verdict === 'healthy') return;
+      setDecodeFailed(true);
+      tryAutoCompat(idx);
+    }, SAMPLE_INTERVAL_MS);
+    decodeWatchRef.current = { timer };
+  }, [stopDecodeWatch, tryAutoCompat]);
 
   const clearCompatCache = async () => {
     const affected = !!compatMap[currentIndex] || !!compatRequestRef.current;
@@ -571,7 +617,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     } catch (e) { showToast('清理转码缓存失败: ' + e.message); }
   };
 
-  // 播放中若始终解不出画面（videoWidth 一直为 0），判定为解码不兼容。
+  // 播放开始后启动解码守卫：黑屏有声 / 解不出画面会自动转 H.264 兼容格式。
   // 必须定义在早返回之前 —— hooks 不能出现在条件分支之后。
   const handlePlaying = useCallback((event) => {
     const media = loadedMediaRef.current;
@@ -585,20 +631,9 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     setAutoAdvancing(false);
     setDecodeFailed(false);
     setMediaBuffering(false);
-    const idx = currentIndex;
-    const version = mediaVersion.current;
-    clearTimeout(decodeTimer.current);
-    decodeTimer.current = setTimeout(() => {
-      if (version !== mediaVersion.current) return;
-      const v = videoRef.current;
-      if (!v) return;
-      if (v.videoWidth === 0 && !v.paused && v.currentTime > 0.3) {
-        setDecodeFailed(true);
-        tryAutoCompat(idx);
-      }
-    }, 2600);
+    startDecodeWatch(currentIndex);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, tryAutoCompat, playbackVersion, canPlay, videoSrc, persistPosition]);
+  }, [currentIndex, tryAutoCompat, startDecodeWatch, playbackVersion, canPlay, videoSrc, persistPosition]);
 
   /**
    * 在线播放：明文片源按需加载，加密片源准备后返回播放地址。
@@ -646,6 +681,18 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         }
         request.streamId = res.streamId;
         request.prepared = true;
+        mediaCodecRef.current = String(res.codec || '');
+        // 本机明确解不了 HEVC 时直接转兼容格式，避免先播一段黑屏有声再手工切换。
+        if (autoCompat && shouldTranscodeFirst(res.codec, probeHevcSupport(
+          () => document.createElement('video'),
+          typeof MediaSource !== 'undefined' ? MediaSource : null
+        ))) {
+          releaseOnline();
+          setOnlineProgress(null);
+          showToast('本机无法解码 HEVC，自动转为 H.264 兼容格式');
+          startCompatPlay(vidIndex);
+          return;
+        }
         setMediaBuffering(true);
         setOnlineUrl(res.url);
         setOnlineProgress(null);
@@ -655,7 +702,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         await recoverOnlineFailure(ep, '在线播放失败: ' + e.message);
       }
     },
-    [episodes, activeSeriesId, showToast, refreshCacheInfo, resetPlayback, releaseOnline, currentPosition, recoverOnlineFailure]
+    [episodes, activeSeriesId, showToast, refreshCacheInfo, resetPlayback, releaseOnline, currentPosition, recoverOnlineFailure, autoCompat, startCompatPlay]
   );
 
   function reconnectOnce() {

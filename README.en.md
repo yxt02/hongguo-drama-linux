@@ -153,9 +153,11 @@ fixed 1080p nor a complete series.
   history. Switching pages in the app keeps playback and progress going.
 - **0.25×–4× speed** — 16 steps. The speed readout is a button that steps +0.25×, wrapping to 1×
   after 4×. The three-dot menu picks a level directly; speed is kept across episodes.
-- **Compatible playback** — compatibility mode is on by default; if decoding fails or you get a
-  black picture with sound, the app tries H.264 conversion (also manually via "转码后播放").
-  Progress is shown, and you can cancel or clear the cache.
+- **Compatible playback** — compatibility mode is on by default; while playing, the app detects
+  "black picture with sound" and undecodable frames and switches to H.264 conversion
+  automatically — no manual toggle needed. When a source is HEVC and the machine cannot decode
+  it, the app transcodes first instead of showing a black screen. Manual "转码后播放" stays
+  available. Progress is shown, and you can cancel or clear the cache.
 - **Failure recovery** — cancel preparation, retry the episode, reconnect the source, or try
   compatibility transcoding. Expired addresses are refreshed a limited number of times; hardware
   transcode failures fall back to software.
@@ -215,8 +217,8 @@ about paid content. Source interfaces change — what worked before may stop wor
 ### Downloads fail, or the catalogue won't load
 
 Check your network and the source platform first, then the proxy switch and mode, and lower
-concurrency. Use "retry failed" or reload the catalogue. Black picture with sound can often be
-fixed with compatibility mode.
+concurrency. Use "retry failed" or reload the catalogue. Black picture with sound now switches to
+H.264 compatibility format automatically (also manually via "转码后播放").
 
 ### Where are my videos, settings and history?
 
@@ -254,11 +256,12 @@ credentials and personal file paths from screenshots and logs.
 The current release is **1.73** (`1.73.0` in source). Package, signing and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
-**Linux verification** — the bundled 54-check suite passes on Ubuntu 24.04 x86-64 with the bundled
+**Linux verification** — the bundled 57-check suite passes on Ubuntu 24.04 x86-64 with the bundled
 FFmpeg, covering storage atomicity, window layout, stealth window, single-instance, download queue
 and retry, quality selection, HLS remux, merge and cancellation, playback controls / speed /
-resume / shortcuts, all three sources, source recovery and routing, danmaku, watch history, web
-media guarding and share-link security. The packaged bundle was smoke-tested end to end: extract →
+resume / shortcuts, decode-failure auto-repair (black screen with sound → H.264), all three
+sources, source recovery and routing, danmaku, watch history, web media guarding and share-link
+security. The packaged bundle was smoke-tested end to end: extract →
 `./红果短剧.sh` (no flags) → live catalogue loads and search returns real results.
 
 **Not covered** — physical Windows 11, all GPUs, physical Intel Macs, clean Gatekeeper environments,

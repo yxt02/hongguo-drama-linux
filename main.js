@@ -2194,7 +2194,9 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
             }
           };
           const prepared = await withMediaRecovery(key,seriesId,{playInfo:checkedPlayInfo,force,signal:controller.signal},async playInfo => {
-            const entry = {size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0};
+            const entry = {size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0,
+              // 让渲染器提前知道编码：本机解不了 HEVC 时可直接转兼容格式，不再先播一段黑屏。
+              codec:String(playInfo.codec || '')};
             if (playInfo.format === 'hls') await prepareHlsEntry(playInfo,entry,controller.signal,received => progress(received,0));
             else if (!prefetch && !playInfo.spadeA && !playInfo.contentKey) return {...entry,playInfo};
             else {
@@ -2219,7 +2221,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     session.entry = { ...entry }; entry.lastUsed = Date.now();
     return { success: true, url: `${STREAM_SCHEME}://play/${streamId}`, streamId, size: entry.size,
-      cached, streaming: !!entry.playInfo };
+      cached, streaming: !!entry.playInfo, codec: String(entry.codec || '') };
   } catch (error) {
     releaseOnlineSession(streamId);
     return { success: false, error: error.message };
