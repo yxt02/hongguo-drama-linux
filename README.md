@@ -56,15 +56,19 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 
 ## 下载与安装
 
-**当前正式版：1.73**。按你的设备选择一个文件即可，媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+> **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
+> [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
+
+**当前正式版：1.73**。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 1.73 | 安装方式 |
 |---|---|---|
-| Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-arm64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-x64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.zip) | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
+| **Linux x64（本仓库）** | [下载 tar.gz](https://github.com/yxt02/hongguo-drama-linux/releases/latest) | 解压后运行 `./红果短剧.sh`，详见上方「Linux 快速开始」 |
+| Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-arm64.dmg)（上游） | 打开 DMG，拖入「应用程序」后启动 |
+| Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-x64.dmg)（上游） | 打开 DMG，拖入「应用程序」后启动 |
+| Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.zip)（上游） | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
 
-[查看最新正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.73 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.73) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/SHA256SUMS.txt)
+[本仓库 Linux 发行页](https://github.com/yxt02/hongguo-drama-linux/releases) · [上游正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.73 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.73) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/SHA256SUMS.txt)
 
 - **更新旧版**：先退出应用，再替换程序，保留原有用户资料目录。软件只提示更新，不会自动下载或安装。
 - **Mac**：1.73 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。

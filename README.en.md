@@ -30,8 +30,10 @@
 > endorsement from those platforms. No paid episode unlocking is offered; available series,
 > quality and catalogue depend entirely on the source platforms.
 >
-> This repository is the **Linux port**. Upstream ships macOS and Windows only; Linux packaging,
-> the Chromium sandbox workaround and the FFmpeg assembly script were added here.
+> **This repository is a fork of
+> [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama)** and **only maintains Linux
+> support**. Upstream ships macOS and Windows only; Linux packaging, the Chromium sandbox
+> workaround and the FFmpeg assembly script live here. For Mac and Windows builds, use upstream.
 
 ---
 
