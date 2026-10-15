@@ -7,11 +7,15 @@ const { execFileSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 const project = path.resolve(__dirname, '..'), current = path.join(project, 'main.js'), req = createRequire(current);
 const argv = process.argv.slice(2), arg = name => argv[argv.indexOf(name) + 1];
-assert.ok(argv.includes('--old') && argv.includes('--real'), '需要 --old 旧 main.js 和 --real 两个片段路径');
+if (!argv.includes('--old') || !argv.includes('--real')) {
+  console.log('SKIP check-merge-benchmark: 需要 --old 旧 main.js 和 --real 两个片段路径');
+  process.exit(0);
+}
 const files = argv.slice(argv.indexOf('--real') + 1);
 assert.equal(files.length, 2, '只接受两个完整真实片段');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-merge-bench-'));
-const bin = name => process.env[name.toUpperCase()] || path.join(project, 'build/ffmpeg/darwin-arm64', name);
+const { resolveFfmpegBinary } = require('./ffmpeg-bin.cjs');
+const bin = name => resolveFfmpegBinary(name);
 const run = (name, args) => execFileSync(bin(name), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 110000, maxBuffer: 2 * 1024 * 1024 });
 const probe = file => JSON.parse(run('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
 const originals = files.map(file => { const stat = fs.statSync(file); return [stat.size, stat.mtimeMs]; });

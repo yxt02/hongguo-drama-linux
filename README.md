@@ -4,6 +4,10 @@
 
 <h1 align="center">红果短剧 · 桌面版</h1>
 
+<p align="center">
+  <strong>中文</strong> · <a href="README.en.md">English</a>
+</p>
+
 <p align="center">发现好剧，接着上次看。搜索、播放、下载、追剧与合并导出，在一个桌面应用里完成。</p>
 
 <p align="center">
@@ -20,6 +24,32 @@
   <a href="#常见问题">常见问题</a> ·
   <a href="https://github.com/jackotom/hongguo-drama/issues">反馈问题</a>
 </p>
+
+## Linux 快速开始
+
+> **本仓库是 Linux 移植版。** 上游只提供 macOS 与 Windows；本仓库补上了 Linux 打包、Chromium 沙箱适配与 FFmpeg 装配。功能完全一致。
+
+**不需要 Node.js、不需要系统 FFmpeg、不需要任何启动参数。**
+
+```sh
+tar -xzf 红果短剧-*-linux-x64.tar.gz
+cd hongguo-linux-x64
+./红果短剧.sh          # 双击也可以
+```
+
+可选：装进应用菜单（**不需要 root / sudo**，全部装在 `~/.local`）
+
+```sh
+./install.sh              # 菜单出现「红果短剧」，终端可敲 hongguo
+./install.sh --uninstall  # 卸载
+```
+
+**为什么必须用启动器，不能直接跑 `app/hongguo-downloader`？**
+Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，所以应用内无法补救。Ubuntu 23.10+ 的 AppArmor 会阻止用户命名空间沙箱，未提权的 `chrome-sandbox` 又会让 Chromium 直接中止。启动器检测到该组合时自动补 `--no-sandbox`，其余情况不加、保持默认沙箱。
+
+详见 [从源码构建 Linux 版](#从源码构建-linux-版) 与 [Linux 移植分析](docs/LINUX-PORT.md)。
+
+---
 
 ## 下载与安装
 
@@ -345,6 +375,68 @@ FFmpeg 二进制不提交到 Git。重新分发编译包时，请按 GPL 要求�
 ## 从源码构建 Windows 版
 
 在 Windows x64 上构建便携 EXE，需准备匹配的 FFmpeg / FFprobe；完整依赖、媒体工具源码与构建命令见 [三平台发行与 Windows 构建说明](docs/RELEASING.md)。云端构建工作流随源码提供。自行构建不会自动获得代码签名。
+
+## 从源码构建 Linux 版
+
+<details>
+<summary>展开构建步骤、产物位置、沙箱说明与 FFmpeg 校验</summary>
+
+应用使用 **Electron + React + Node.js**。Linux 构建需要 Node.js **22.12 或更新版本**、npm、`tar`、`ldd`、`git`、`curl`，以及可用的 `python3`（`electron-builder` 解包用）。构建脚本不会自动安装这些系统依赖。
+
+```sh
+git clone https://github.com/jackotom/hongguo-drama.git
+cd hongguo-drama
+npm ci
+npm run build:linux:dir     # 生成 dist/linux-unpacked/
+npm run build:linux:appimage  # 额外生成 AppImage
+```
+
+`npm run build:linux` 会先跑 `node scripts/setup-ffmpeg-linux.js` 校验或获取 FFmpeg，再生成前端并打包。
+
+| 用途 | 命令或产物 |
+|---|---|
+| 开发模式 | `npm run dev` |
+| 源码目录直接启动（自动处理沙箱） | `npm run start:linux` |
+| 仅生成 Linux 应用目录 | `npm run build:linux:dir` |
+| 应用产物 | `dist/linux-unpacked/hongguo-downloader` |
+| AppImage | `dist/红果短剧-<版本>-x86_64.AppImage` |
+
+### Chromium 沙箱（Ubuntu 24.04 等发行版）
+
+Electron 在 Linux 上可用 **SUID `chrome-sandbox`** 或 **非特权用户命名空间** 两种沙箱。Ubuntu 23.10+ 默认 `kernel.apparmor_restrict_unprivileged_userns=1`，会阻止命名空间沙箱；此时若 `chrome-sandbox` 也非 root 所有的 SUID，Chromium 会在启动时直接中止。
+
+`npm run start:linux` 会自动检测这一组合并退到 `--no-sandbox`，同时打印三种可选修法（SUID helper、AppArmor sysctl、或使用打包器产物）。仅本机自用时 `--no-sandbox` 通常可接受；对外分发请用会正确安装 SUID helper 的 deb/AppImage 包。
+
+### FFmpeg 的校验与来源
+
+Linux 包内置的 FFmpeg / FFprobe 位于 `build/ffmpeg/linux-x64/`，来源为 **BtbN FFmpeg-Builds** 的 `n8.1 linux64-gpl` 发布构建（含 libx264 / libx265），由 `scripts/setup-ffmpeg-linux.js` 按固定 SHA256 校验：
+
+- 归档 SHA256、二进制 SHA256 记录在 `build/ffmpeg/linux-x64/build-manifest.json`；
+- 校验 ELF 魔数与 x86-64 机器类型；
+- 用 `ldd` 确认只依赖系统动态库（glibc / libgcc），全静态亦可接受。
+
+已下载的归档可通过 `FFMPEG_LINUX_ARCHIVE=/path/to.tar.xz` 复用，避免重复下载。
+
+- [FFmpeg 来源、许可与校验说明](build/ffmpeg/LINUX-NOTICE.txt)（含「为何不用更小的全静态构建」的实测记录）
+- [FFmpeg GPLv3 许可全文](build/ffmpeg/COPYING.GPLv3) · [LGPLv2.1](build/ffmpeg/COPYING.LGPLv2.1)
+
+**与 Windows / macOS 构建的差异**：那两端从钉住的源码快照自行编译、只链接 x264 并随发行附带对应源码包；Linux 使用上游预编译 gpl 发布构建，编码器集合更大，两个二进制约 330MB。若要求同等的「最小依赖 + 可复现源码」标准，可自行编译 FFmpeg 放入 `build/ffmpeg/linux-x64/`，setup 脚本会校验任何通过上述检查的产物——但**务必先用 AES-128 HLS 转封装命令做冒烟测试**（详见 LINUX-NOTICE）。
+
+FFmpeg 二进制不提交到 Git。重新分发编译包时，请按 GPL 要求同时提供完整对应源码及构建材料。
+
+### 在 Linux 上跑校验套件
+
+```sh
+export FFMPEG=$PWD/build/ffmpeg/linux-x64/ffmpeg
+export FFPROBE=$PWD/build/ffmpeg/linux-x64/ffprobe
+export HONGGUO_FFMPEG=$FFMPEG HONGGUO_FFPROBE=$FFPROBE
+node scripts/check-merge.cjs          # 合并链路
+node scripts/check-hls-media.cjs      # HLS 拆包（需 HONGGUO_VIDEO_FIXTURE）
+```
+
+平台专属检查（`check-ffmpeg-mac`、`check-macos`、`check-windows-release`）在不匹配的平台上会打印 `SKIP` 并返回 0。
+
+</details>
 
 ## 上游、许可证与使用边界
 

@@ -3,6 +3,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+if (process.platform !== 'darwin') {
+  console.log('SKIP check-ffmpeg-mac: 需要 macOS（lipo/otool 与 darwin 构建）');
+  process.exit(0);
+}
 const arch = process.argv[2] || process.arch;
 assert(['arm64', 'x64'].includes(arch), 'Expected arm64 or x64');
 const binary = name => path.resolve(__dirname, `../build/ffmpeg/darwin-${arch}`, name);

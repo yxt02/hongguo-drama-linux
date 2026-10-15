@@ -17,8 +17,14 @@
     "pack": "electron-builder --dir",
     "zip": "node scripts/make-zip.js",
     "setup:ffmpeg:mac": "node scripts/setup-ffmpeg-mac.js",
+    "setup:ffmpeg:linux": "node scripts/setup-ffmpeg-linux.js",
     "build:mac": "node scripts/setup-ffmpeg-mac.js arm64 x64 && npm run build:react && electron-builder --mac dmg --arm64 --x64 --publish never",
-    "build:mac:dir": "node scripts/setup-ffmpeg-mac.js arm64 x64 && npm run build:react && electron-builder --mac --arm64 --x64 --dir --publish never"
+    "build:mac:dir": "node scripts/setup-ffmpeg-mac.js arm64 x64 && npm run build:react && electron-builder --mac --arm64 --x64 --dir --publish never",
+    "build:linux": "node scripts/setup-ffmpeg-linux.js && npm run build:react && electron-builder --linux --x64 --publish never",
+    "build:linux:dir": "node scripts/setup-ffmpeg-linux.js && npm run build:react && electron-builder --linux --x64 --publish never --dir",
+    "build:linux:appimage": "node scripts/setup-ffmpeg-linux.js && npm run build:react && electron-builder --linux appimage --x64 --publish never",
+    "package:linux": "node scripts/package-linux.js",
+    "start:linux": "node scripts/run-linux.js"
   },
   "dependencies": {
     "anime4k-webgpu": "1.0.0",
@@ -150,6 +156,54 @@
       "binaries": [
         "Contents/Resources/bin/ffmpeg",
         "Contents/Resources/bin/ffprobe"
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "AudioVideo",
+      "icon": "build/icon.png",
+      "synopsis": "红果短剧播放与下载",
+      "description": "面向桌面使用者的短剧浏览、搜索、在线播放与本地下载应用",
+      "desktop": {
+        "entry": {
+          "Name": "红果短剧",
+          "Comment": "发现好剧，接着上次看",
+          "Categories": "AudioVideo;Video;Player;",
+          "StartupWMClass": "hongguo-downloader"
+        }
+      },
+      "extraResources": [
+        {
+          "from": "build/ffmpeg/linux-x64",
+          "to": "bin",
+          "filter": [
+            "ffmpeg",
+            "ffprobe"
+          ]
+        },
+        {
+          "from": "build/ffmpeg",
+          "to": "bin",
+          "filter": [
+            "COPYING.*",
+            "LICENSE.md",
+            "FFMPEG-NOTICE.txt",
+            "LINUX-*.txt"
+          ]
+        }
       ]
     }
   },

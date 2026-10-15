@@ -9,7 +9,8 @@ const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
 const source = path.resolve(__dirname, '../main.js'), req = createRequire(source);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-merge-'));
-const bin = name => process.env[name.toUpperCase()] || path.resolve(__dirname, '../build/ffmpeg/darwin-arm64', name);
+const { resolveFfmpegBinary } = require('./ffmpeg-bin.cjs');
+const bin = name => resolveFfmpegBinary(name);
 const run = (name, args) => execFileSync(bin(name), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 110000 });
 const probe = file => JSON.parse(run('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
 async function merge(label, files, compatible, mode = '') {

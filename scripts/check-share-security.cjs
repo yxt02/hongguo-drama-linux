@@ -70,7 +70,9 @@ async function main() {
     axios.get = original;
     await new Promise(resolve => server.close(resolve));
   }
-  assert.equal(require('../package.json').version, '1.1.7');
+  // The axios pin is security-relevant (redirect and size limits rely on it).
+  // The app version itself moves with every release, so only its shape is checked.
+  assert.match(require('../package.json').version, /^\d+\.\d+\.\d+$/);
   assert.equal(require('../package.json').dependencies.axios, '1.20.0');
   assert.equal(require('axios/package.json').version, '1.20.0');
   console.log('Share security: invalid input, text, redirects, gzip limit and dependency checks passed');

@@ -91,6 +91,10 @@ async function keyHandoff(key, code, expectedSource) {
   return state;
 }
 (async () => {
+  if (process.platform !== 'win32') {
+    console.log('SKIP check-windows-release: 需要 Windows x64 与已构建的便携版 EXE');
+    return;
+  }
   assert.equal(process.platform, 'win32');
   assert.equal(process.arch, 'x64');
   const portable = path.join(root, `dist/${pkg.build.productName}-${pkg.version}-便携版.exe`);

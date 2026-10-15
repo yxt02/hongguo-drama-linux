@@ -1,0 +1,67 @@
+Linux FFmpeg / FFprobe distribution
+===================================
+
+build/ffmpeg/linux-x64/ 下的 ffmpeg 与 ffprobe 是随本软件一起分发的第三方程序，
+用于「一键合并」的分片拼接与「兼容模式」的格式转码。
+
+构建信息
+--------
+版本       : FFmpeg n8.1（release 线，n8.1.3 基线）
+产物       : ffmpeg, ffprobe（ELF 64-bit x86-64）
+来源       : BtbN FFmpeg-Builds — ffmpeg-n8.1-latest-linux64-gpl-8.1
+             https://github.com/BtbN/FFmpeg-Builds
+上游       : https://ffmpeg.org/
+配置       : linux64 gpl 构建，含 libx264 / libx265 等 GPL 组件
+固定校验和 : 80742938a95f9ecf9e0635192b417b7af61ddd53c4ab511898a11da5dad81667
+             （归档 SHA256，见 scripts/setup-ffmpeg-linux.js）
+二进制 SHA256：
+  ffmpeg   00550c65fc35d8e21acae12c4262bdbf74df9b79fa996eb71c85a014571d8542
+  ffprobe  effc9977f8dcb67e8f459822138b0663c44434aafaf4fef058b5c67dfb6dd8c4
+版权       : Copyright (c) 2000-2026 the FFmpeg developers
+
+为什么不是更小的全静态构建
+--------------------------
+曾试用 johnvansickle.com 的 ffmpeg-7.0.2-amd64-static（每个二进制约 80MB，
+全静态、体积优势明显）。实测该构建在本应用的 **AES-128 HLS 转封装**路径上
+会段错误：
+
+    ffmpeg -protocol_whitelist file,crypto -allowed_extensions ALL \
+           -i local.m3u8 -map 0:v:0 -map '0:a?' -c copy -f mp4 out.mp4
+    → Segmentation fault
+
+AES-128 HLS 是应用的核心能力（见 README），因此体积让位于正确性：
+本目录改用 BtbN n8.1 gpl 构建，上述命令实测通过，并跑通全部 54 项自检。
+若日后要换更小的构建，务必先复现该命令再替换。
+
+许可证
+------
+该构建启用 GPL 组件，因此其许可证为
+**GNU General Public License version 3（GPLv3）** 或更新版本。
+
+随本目录附带的许可证全文：
+  COPYING.GPLv3, COPYING.GPLv2, COPYING.LGPLv2.1, LICENSE.md, FFMPEG-NOTICE.txt
+
+校验
+----
+`node scripts/setup-ffmpeg-linux.js` 会：
+  1. 核对归档与二进制 SHA256；
+  2. 校验 ELF 魔数与 x86-64 机器类型；
+  3. 用 ldd 确认只依赖系统动态库（glibc / libgcc）；若为全静态亦可接受。
+     这与 macOS 构建的「仅系统动态库」要求对应。
+
+与 Windows / macOS 构建的差异
+----------------------------
+- Windows/macOS 构建从钉住的源码快照自行编译、只链接 x264，每个二进制更小，
+  并随发行附带对应源码包。
+- Linux 构建使用上游预编译的 gpl 发布构建，编码器集合更大（含 libx264/libx265
+  等），两个二进制约 330MB，但不依赖使用者的系统环境。
+- 若要求与另两端同等的「最小依赖 + 可复现源码」标准，可自行从
+  https://ffmpeg.org/releases/ 编译并在 build/ffmpeg/linux-x64/ 放置
+  ffmpeg / ffprobe，再跑 setup 脚本核验；脚本会接受任何通过校验的产物，
+  但请务必先用上面的 AES-128 HLS 命令做冒烟测试。
+
+已下载的归档可通过 `FFMPEG_LINUX_ARCHIVE=/path/to.tar.xz` 复用，
+避免重复下载；`FFMPEG_LINUX_URL` / `FFMPEG_LINUX_SHA256` 可替换来源与校验和。
+
+不随本目录分发的内容：无第三方额外插件、无远程解密组件、无 DRM 处理。
+HLS 仅处理公开的普通与 AES-128 清单；不支持 DRM、直播与付费解锁。

@@ -22,8 +22,12 @@ if (process.argv[2] === '--renderer-test') {
       define: { 'process.env.NODE_ENV': '"development"' },
     });
     fs.writeFileSync(path.join(temp, 'index.html'), '<div id="root"></div><script src="test.js"></script>');
-    const result = require('node:child_process').spawnSync(require(path.join(modules, 'electron')),
-      [__filename, '--renderer-test', temp], { encoding: 'utf8', timeout: 20000 });
+    const electronBin = require(path.join(modules, 'electron'));
+    // Chromium aborts at startup when the SUID helper is unusable and user
+    // namespaces are restricted (Ubuntu 24.04), so add --no-sandbox there.
+    const { sandboxArgv } = require('./chromium-sandbox.cjs');
+    const result = require('node:child_process').spawnSync(electronBin,
+      sandboxArgv(electronBin, [__filename, '--renderer-test', temp]), { encoding: 'utf8', timeout: 20000 });
     console.log(result.stdout.trim());
     if (result.status !== 0) console.error(result.error || result.stderr.trim());
     process.exitCode = result.status === 0 ? 0 : 1;

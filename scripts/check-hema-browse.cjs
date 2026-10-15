@@ -77,7 +77,11 @@ async function check() {
   assert.match((await browseList()).error, /超时/);
 
   const browse = fs.readFileSync(path.join(root, 'src/components/Browse.jsx'), 'utf8');
-  assert.match(browse, /<option value="hema">河马短剧<\/option>/);
+  // Source options come from the media-source model now, so assert the wiring
+  // rather than a literal <option> that no longer exists in Browse.jsx.
+  const sourceModel = fs.readFileSync(path.join(root, 'src/components/mediaSourcesModel.mjs'), 'utf8');
+  assert.match(sourceModel, /\{\s*id:\s*'hema',\s*label:\s*'河马短剧'\s*\}/, '来源模型须声明河马短剧');
+  assert.match(browse, /mediaSources\.map\(\(\{\s*id,\s*label\s*\}\)\s*=>\s*<option/, '来源下拉须由 mediaSources 渲染');
   assert.match(browse, /source !== 'hongguo' && !totalPages && \(page > 1 \|\| meta.hasMore\)/);
   assert.match(browse, /西饭热播榜暂未接入/);
   const paging = browse.slice(browse.indexOf('  const gotoPage ='), browse.indexOf('  // ===== 打开某部剧'));
