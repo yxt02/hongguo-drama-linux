@@ -31,8 +31,11 @@
 
 **不需要 Node.js、不需要系统 FFmpeg、不需要任何启动参数。**
 
+从 [Releases](https://github.com/yxt02/hongguo-drama-linux/releases/latest) 下载
+`hongguo-drama-<version>-linux-x64.tar.gz`，然后：
+
 ```sh
-tar -xzf 红果短剧-*-linux-x64.tar.gz
+tar -xzf hongguo-drama-*-linux-x64.tar.gz
 cd hongguo-linux-x64
 ./红果短剧.sh          # 双击也可以
 ```

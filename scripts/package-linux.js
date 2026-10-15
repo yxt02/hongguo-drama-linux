@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Assemble a self-contained Linux bundle: app/ + launcher + installer + docs.
 //
-// Produces dist/hongguo-linux-x64/ and dist/红果短剧-<version>-linux-x64.tar.gz
+// Produces dist/hongguo-linux-x64/ and dist/hongguo-drama-<version>-linux-x64.tar.gz
 // so a user only needs to extract and run 红果短剧.sh — or run install.sh to
 // add it to the desktop menu. No Node.js, no system ffmpeg, no flags required.
 const fs = require('node:fs');
@@ -115,7 +115,9 @@ function main() {
   // leaving the file as shipped; the launcher decides when to work around it.
 
   step('生成 tar.gz');
-  const tarball = path.join(root, 'dist', `红果短剧-${pkg.version}-linux-x64.tar.gz`);
+  // ASCII asset name: GitHub release upload mangles non-ASCII filenames, and
+  // an ASCII name is safer for shell quoting and download links.
+  const tarball = path.join(root, 'dist', `hongguo-drama-${pkg.version}-linux-x64.tar.gz`);
   fs.rmSync(tarball, { force: true });
   run('tar', ['-C', path.join(root, 'dist'), '-czf', tarball, stageName]);
 

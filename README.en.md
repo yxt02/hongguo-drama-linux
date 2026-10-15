@@ -39,11 +39,11 @@
 
 **No Node.js, no system FFmpeg, no flags required.**
 
-1. Download [`红果短剧-<version>-linux-x64.tar.gz`](https://github.com/yxt02/hongguo-drama-linux/releases/latest)
+1. Download [`hongguo-drama-<version>-linux-x64.tar.gz`](https://github.com/yxt02/hongguo-drama-linux/releases/latest)
 2. Extract it and run the launcher:
 
 ```sh
-tar -xzf 红果短剧-*-linux-x64.tar.gz
+tar -xzf hongguo-drama-*-linux-x64.tar.gz
 cd hongguo-linux-x64
 ./红果短剧.sh
 ```
@@ -88,7 +88,7 @@ HONGGUO_NO_SANDBOX=1 ./红果短剧.sh
 git clone https://github.com/yxt02/hongguo-drama-linux.git
 cd hongguo-drama-linux
 npm ci
-npm run package:linux      # produces dist/红果短剧-<version>-linux-x64.tar.gz
+npm run package:linux      # produces dist/hongguo-drama-<version>-linux-x64.tar.gz
 ```
 
 | Command | Output |
