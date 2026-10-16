@@ -94,15 +94,15 @@ function mountApp() {
     ui.episode(2); await ui.flush(); ui.metadata(); ui.media.currentTime = 28;
     app.render(); app.navigate('feed'); assert.equal(app.player(), undefined); ui.unmount();
     app.navigate('player'); ui = await start(f, app.player().props);
-    assert.equal(ui.prepares.at(-1).vidIndex, 2, 'consumed initial episode must not replay');
+    assert.equal(ui.prepares.filter(p => !p.prefetch).at(-1).vidIndex, 2, 'consumed initial episode must not replay');
     assert.equal(ui.media.currentTime, 28);
     ui.find(n => n.props.className?.includes('series-picker-btn')).props.onClick(); await ui.flush();
     ui.find(n => n.props.className?.includes('series-row') && n.props.key === 'B').props.onClick();
     await ui.flush(); ui.episode(2); await ui.flush(); ui.metadata(); ui.media.currentTime = 41;
     app.render(); app.navigate('feed'); ui.unmount(); app.navigate('player');
     ui = await start(f, app.player().props);
-    assert.equal(ui.prepares.at(-1).seriesId, 'B', 'return must retain the manually selected series');
-    assert.equal(ui.prepares.at(-1).vidIndex, 2); assert.equal(ui.media.currentTime, 41); ui.unmount();
+    assert.equal(ui.prepares.filter(p => !p.prefetch).at(-1).seriesId, 'B', 'return must retain the manually selected series');
+    assert.equal(ui.prepares.filter(p => !p.prefetch).at(-1).vidIndex, 2); assert.equal(ui.media.currentTime, 41); ui.unmount();
   });
   process.exitCode = failures ? 1 : 0;
 })();

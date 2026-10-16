@@ -1,3 +1,7 @@
+# Linux fork 发行
+
+本仓库独立维护 Linux x64，使用 `v<SemVer>-linux` 标签。v1.74.0-linux 发布已验证的 Linux 包、对应应用源码与 SHA256SUMS.txt；Mac/Windows 继续引用上游构建，不标为本 fork 已发布的平台。下文保留上游三平台发行规则供参考。
+
 # 同步发行规则
 
 从 1.1.9 起，一轮更新共用一个版本：Mac Apple Silicon arm64、Mac Intel x64、Windows x64。不得按平台独立跳号。本机未公开测试版不另算发行。

@@ -28,6 +28,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const hongguo = require('./src/native/hongguo');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./src/native/download-quality');
 const { decryptInWorker } = require('./src/native/decrypt-worker.cjs');
+const playbackCache = require('./src/native/playback-cache');
 const store = require('./src/store');
 const watchHistory = require('./src/native/watch-history');
 const { fitWindowBounds } = require('./src/native/window-layout');
@@ -118,7 +119,8 @@ function releaseOnlineSession(id) {
   const pending = session.job;
   if (pending && ![...onlineSessions.values()].some(s => s.job === pending)) {
     pending.controller.abort();
-    if (onlinePreparing.get(session.vid) === pending) onlinePreparing.delete(session.vid);
+    const key = session.cacheKey || session.vid;
+    if (onlinePreparing.get(key) === pending) onlinePreparing.delete(key);
   }
 }
 
@@ -169,6 +171,7 @@ function getDefaultSettings() {
     name_format: '剧名 集数',
     max_concurrent: 3,
     download_quality: 'auto',
+    playback_quality: 'auto',
     custom_sources: [],
     // 看完一集后自动删除本地文件（边看边清，避免占用磁盘）
     auto_delete_watched: false,
@@ -671,7 +674,7 @@ async function executeHongguoDownload(task) {
     task.savePath = finalPath;
     // Recheck source access before reusing an existing third-party file or URL.
     const checkedPlayInfo = /^(xifan|hema|custom):/.test(String(vid))
-      ? await hongguo.fetchPlayUrlSingle(vid, hongguoInfo?.series_id, { quality }) : null;
+      ? await hongguo.fetchPlayUrlSingle(vid, hongguoInfo?.series_id, { quality, preferQuality: true }) : null;
     if (checkedPlayInfo && !checkedPlayInfo.url) throw new Error(checkedPlayInfo.error || '来源未开放该集');
     // Existing complete files need no additional media transfer.
     source.token.throwIfRequested();
@@ -684,7 +687,7 @@ async function executeHongguoDownload(task) {
       return;
     }
     tmpPath = finalPath + '.enc.tmp';
-    const cached = onlineCache.get(String(vid));
+    const cached = playbackEntry(vid, quality) || onlineCache.get(String(vid));
     const sourceId = /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo';
     let reusedCache = false;
     if (cached?.complete && cached.vid === String(vid) && cached.source === sourceId
@@ -706,7 +709,7 @@ async function executeHongguoDownload(task) {
         cached.lastUsed = Date.now();
       }
     }
-    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, { playInfo: checkedPlayInfo, quality, force: true, cancelToken: source.token }, async playInfo => {
+    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, { playInfo: checkedPlayInfo, quality, preferQuality: true, force: true, cancelToken: source.token }, async playInfo => {
       source.token.throwIfRequested();
       if (playInfo.format === 'hls') {
         await prepareHlsFile(playInfo,tmpPath,{cancelToken:source.token,onProgress:received => { task.receivedBytes = received; sendToRenderer('download-progress',{id,progress:0,receivedBytes:received,totalBytes:0}); }});
@@ -1039,8 +1042,8 @@ async function invalidateCustomSource(id) {
   require('./src/native/custom-source').cancelRequests(id);
   const prefix = `custom:${id}:`;
   for (const [streamId, session] of [...onlineSessions]) if (session.vid.startsWith(prefix)) releaseOnlineSession(streamId);
-  for (const [key, job] of [...onlinePreparing]) if (key.startsWith(prefix)) { job.controller.abort(); onlinePreparing.delete(key); }
-  for (const key of [...onlineCache.keys()]) if (key.startsWith(prefix)) deleteOnlineCacheEntry(key);
+  for (const [key, job] of [...onlinePreparing]) if ((job.vid || key).startsWith(prefix)) { job.controller.abort(); onlinePreparing.delete(key); }
+  for (const [key, entry] of [...onlineCache]) if ((entry.vid || key).startsWith(prefix)) deleteOnlineCacheEntry(key);
   for (const job of compatPreparing.values()) if (job.sourceVid.startsWith(prefix)) cancelCompatJob(job);
   await Promise.all(downloadTasks.filter(task => String(task.hongguoInfo?.vid).startsWith(prefix) && isTaskInFlight(task)).map(task => stopTaskAndWait(task).catch(() => {})));
   try { saveDownloadTasks(); } catch (_) { /* storage-error already reports task persistence independently. */ }
@@ -1830,7 +1833,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       let info;
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
-          { quality: options.quality, force: options.force || round > 0 }), controller.signal, 30000);
+          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0 }), controller.signal, 30000);
       } catch (error) {
         cancelled();
         if (!recoverable(error)) throw error;
@@ -2168,7 +2171,188 @@ async function prepareHlsEntry(playInfo,entry,signal,onProgress) {
   } catch (error) { disposeOnlineDisk(entry); throw error; }
 }
 
+// Managed desktop playback keeps complete, validated files on disk, keyed by source and quality.
+let playbackWindow = null;
+let playbackCacheLoaded = false;
+function playbackCacheDir() { return path.join(app.getPath('userData'), 'playback-cache'); }
+function loadPlaybackCache() {
+  if (playbackCacheLoaded) return;
+  for (const entry of playbackCache.restore(playbackCacheDir())) {
+    const key = playbackCache.cacheKey(entry.vid, entry.quality);
+    if (onlineCache.has(key)) disposeOnlineDisk(entry);
+    else onlineCache.set(key, entry);
+  }
+  playbackCacheLoaded = true;
+}
+function playbackEntry(vid, quality = 'auto') {
+  return onlineCache.get(playbackCache.cacheKey(vid, quality)) || (quality === 'auto' ? onlineCache.get(String(vid)) : null);
+}
+function withinPlaybackWindow(entry) {
+  return !playbackWindow || (entry.seriesId === playbackWindow.seriesId && playbackWindow.keys.has(playbackCache.cacheKey(entry.vid, entry.quality)));
+}
+function prunePlaybackWindow() {
+  for (const job of compatPreparing.values()) if (job.vid && !withinPlaybackWindow(job)) cancelCompatJob(job);
+  for (const [key, entry] of [...onlineCache]) if (entry.disk?.managed && !withinPlaybackWindow(entry)) deleteOnlineCacheEntry(key);
+  for (const [key, job] of [...onlinePreparing]) if (job.disk && !withinPlaybackWindow(job)) {
+    job.controller.abort(); onlinePreparing.delete(key);
+  }
+  // Compatibility output belongs to the same episode window as its original.
+  const dir = getCompatDir();
+  for (const name of fs.readdirSync(dir).filter(n => n.endsWith('.mp4'))) {
+    const file = path.join(dir, name);
+    try {
+      const entry = JSON.parse(fs.readFileSync(file + '.json', 'utf8'));
+      if (withinPlaybackWindow(entry)) continue;
+      if ([...compatPreparing.keys()].includes(file)) continue;
+      fs.unlinkSync(file); fs.unlinkSync(file + '.json');
+    } catch (_) {
+      // Old cache files have no verified identity. Discard them once the window is known.
+      if (!playbackWindow || [...compatPreparing.keys()].includes(file)) continue;
+      try { fs.unlinkSync(file); } catch (_) {}
+      try { fs.unlinkSync(file + '.json'); } catch (_) {}
+    }
+  }
+}
+ipcMain.handle('set-playback-window', (_event, payload) => {
+  try {
+    loadPlaybackCache();
+    playbackWindow = playbackCache.windowEntries(payload);
+    prunePlaybackWindow();
+    return { success: true };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+async function probePlaybackFile(file, quality, task) {
+  const probe = resolveFfmpeg('ffprobe');
+  const info = probe ? await probeVideoInfo(probe, file, task) : null;
+  if (!info || ![info.w, info.h, info.duration].every(n => Number.isFinite(n) && n > 0)) throw new Error('缓存视频不完整或缺少有效视频轨');
+  if (!meetsDownloadQuality({ width: info.w, height: info.h }, quality)) throw new Error('片源未达到所选清晰度，未自动降级');
+  return { codec: info.vcodec || info.codec || '', width: info.w, height: info.h, actualQuality: Math.min(info.w, info.h) + 'p' };
+}
+async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress) {
+  const directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(vid, quality)));
+  const entry = { vid: String(vid), seriesId: String(seriesId), quality, filePath: path.join(directory, 'video.mp4'),
+    disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo', codec: playInfo.codec || '' };
+  const input = path.join(directory, 'input.part');
+  try {
+    if (playInfo.format === 'hls') await prepareHlsFile(playInfo, entry.filePath, { signal, onProgress });
+    else {
+      const response = await requestMedia(playInfo, { signal });
+      const total = Number(response.headers['content-length']) || 0;
+      let received = 0, lastProgress = 0;
+      if (total > playbackCache.MAX_EPISODE_BYTES) { response.data.destroy(); throw new Error('单集超过 1GB，已停止自动缓存'); }
+      response.data.on('data', chunk => {
+        received += chunk.length;
+        if (received > playbackCache.MAX_EPISODE_BYTES) response.data.destroy(new Error('单集超过 1GB，已停止自动缓存'));
+        if (Date.now() - lastProgress > 150 || received === total) { onProgress?.(received, total); lastProgress = Date.now(); }
+      });
+      try { await pipeline(response.data, fs.createWriteStream(input, { mode: 0o600 }), { signal }); }
+      finally { response.data.destroy(); }
+      if (!received || (total && total !== received)) throw mediaTransferError('视频下载不完整，请重试');
+      if (playInfo.contentKey) {
+        onProgress?.(received, received, 'decrypting');
+        await decryptContentKeyFile(input, entry.filePath, playInfo.contentKey, { signal });
+      } else if (playInfo.spadeA) {
+        onProgress?.(received, received, 'decrypting');
+        const key = hongguo.deriveKey(playInfo.spadeA);
+        if (!key) throw new Error('密钥派生失败');
+        await decryptInWorker({ srcPath: input, dstPath: entry.filePath, key }, { signal });
+      } else await fsp.rename(input, entry.filePath);
+    }
+    if (signal.aborted) throw new Error('已取消播放');
+    Object.assign(entry, await probePlaybackFile(entry.filePath, quality));
+    if (!entry.codec) entry.codec = playInfo.codec || '';
+    const stat = await fsp.stat(entry.filePath);
+    entry.size = stat.size; entry.fileMtime = stat.mtimeMs;
+    if (entry.size > playbackCache.MAX_EPISODE_BYTES) throw new Error('单集超过 1GB，已停止自动缓存');
+    entry.complete = true; entry.validated = true; entry.lastUsed = Date.now();
+    await fsp.unlink(input).catch(() => {});
+    return entry;
+  } catch (error) { await fsp.rm(directory, { recursive: true, force: true }); throw error; }
+}
+async function prepareManualPlayback(original, descriptor, signal) {
+  let directory;
+  try {
+    const info = await probePlaybackFile(original, descriptor.quality);
+    if (signal.aborted) return null;
+    directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(descriptor.vid, descriptor.quality)));
+    const filePath = path.join(directory, 'video.mp4');
+    await fsp.copyFile(original, filePath);
+    const verified = await probePlaybackFile(filePath, descriptor.quality);
+    if (signal.aborted) throw new Error('已取消播放');
+    const stat = await fsp.stat(filePath);
+    if (stat.size > playbackCache.MAX_EPISODE_BYTES) throw new Error('单集超过自动缓存限制');
+    return { ...descriptor, ...info, ...verified, filePath, size: stat.size, fileMtime: stat.mtimeMs,
+      complete: true, validated: true, lastUsed: Date.now(), disk: { directory, readers: 0, managed: true },
+      source: /^custom:[^:]+/.exec(descriptor.vid)?.[0] || /^(xifan|hema):/.exec(descriptor.vid)?.[1] || 'hongguo' };
+  } catch (_) { if (directory) await fsp.rm(directory, { recursive: true, force: true }); return null; }
+}
+async function prepareManagedPlayback(payload) {
+  const { vid, seriesId, vidIndex, requestId, force = false } = payload;
+  let streamId;
+  try {
+    if (!vid || !seriesId || !Number.isInteger(vidIndex) || vidIndex < 1) throw new Error('缺少有效剧集信息');
+    const quality = normalizeDownloadQuality(payload.quality);
+    loadPlaybackCache(); checkCustomAccess(String(vid));
+    const key = playbackCache.cacheKey(vid, quality);
+    const descriptor = { vid: String(vid), seriesId: String(seriesId), vidIndex, quality };
+    if (!withinPlaybackWindow(descriptor)) throw new Error('该集已离开自动缓存范围');
+    streamId = randomUUID();
+    const session = { vid: String(vid), cacheKey: key, requestId, requests: new Set(), entry: null };
+    onlineSessions.set(streamId, session);
+    const manual = downloadTasks.find(task => task.status === 'completed' && task.savePath && fs.existsSync(task.savePath)
+      && String(task.hongguoInfo?.vid) === String(vid) && String(task.hongguoInfo?.series_id) === String(seriesId));
+    const checked = !manual && /^(xifan|hema|custom):/.test(String(vid))
+      ? await hongguo.fetchPlayUrlSingle(vid, seriesId, { quality, preferQuality: true, force }) : null;
+    if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
+    if (checked && !checked.url) throw new Error(checked.error || '来源未开放该集');
+    if (!withinPlaybackWindow(descriptor)) throw new Error('该集已离开自动缓存范围');
+    if (force) deleteOnlineCacheEntry(key);
+    let entry = onlineCache.get(key);
+    if (entry && (!entry.validated || !fs.existsSync(entry.filePath) || fs.statSync(entry.filePath).size !== entry.size || fs.statSync(entry.filePath).mtimeMs !== entry.fileMtime)) {
+      session.entry = entry; // Pin the file while validation yields to cancellation/cleanup.
+      try {
+        if (!fs.existsSync(entry.filePath) || fs.statSync(entry.filePath).size !== entry.size) throw new Error('缓存文件大小已变化');
+        Object.assign(entry, await probePlaybackFile(entry.filePath, quality), { validated: true, fileMtime: fs.statSync(entry.filePath).mtimeMs });
+      }
+      catch (_) { deleteOnlineCacheEntry(key); session.entry = null; disposeOnlineDisk(entry); entry = null; }
+      if (!onlineSessions.has(streamId)) { disposeOnlineDisk(entry); throw new Error('已取消播放'); }
+    }
+    const cached = !!entry;
+    if (!entry) {
+      let job = onlinePreparing.get(key);
+      if (!job || (force && !job.force)) {
+        const controller = new AbortController();
+        job = { ...descriptor, controller, disk: true, force };
+        job.promise = Promise.resolve().then(async () => {
+          let prepared = manual ? await prepareManualPlayback(manual.savePath, descriptor, controller.signal) : null;
+          if (!prepared) prepared = await withMediaRecovery(String(vid), seriesId,
+            { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal },
+            candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal, (received, total, phase) => {
+              for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
+                { vid, seriesId, vidIndex, requestId: active.requestId, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase: phase || 'downloading' });
+            }));
+          Object.assign(prepared, { vidIndex });
+          if (controller.signal.aborted || !withinPlaybackWindow(prepared)) { disposeOnlineDisk(prepared); throw new Error('已取消播放'); }
+          for (const active of onlineSessions.values()) if (active.job === job) active.entry = { ...prepared };
+          if (onlinePreparing.get(key) === job) {
+            try { playbackCache.save(prepared); onlineCache.set(key, prepared); }
+            catch (error) { for (const active of onlineSessions.values()) if (active.job === job) active.entry = null; disposeOnlineDisk(prepared); throw error; }
+          }
+          return prepared;
+        }).finally(() => { if (onlinePreparing.get(key) === job) onlinePreparing.delete(key); });
+        onlinePreparing.set(key, job);
+      }
+      session.job = job; entry = await job.promise;
+    }
+    if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
+    session.entry = { ...entry }; entry.lastUsed = Date.now();
+    return { success: true, url: STREAM_SCHEME + '://play/' + streamId, streamId, cached, size: entry.size,
+      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality };
+  } catch (error) { if (streamId) releaseOnlineSession(streamId); return { success: false, error: error.message }; }
+}
+
 ipcMain.handle('prepare-online-play', async (event, payload) => {
+  if (payload?.disk) return prepareManagedPlayback(payload);
   const { vid, seriesId, vidIndex, requestId, prefetch = false, force = false } = payload || {};
   if (!vid) return { success: false, error: '缺少 vid' };
   const key = String(vid), streamId = randomUUID();
@@ -2236,8 +2420,9 @@ ipcMain.handle('release-online-play', async (event, payload = {}) => {
 });
 
 ipcMain.handle('online-cache-status', async () => {
-  const items = [...onlineCache.entries()].map(([vid, e]) => ({
-    vid, size: e.size, vidIndex: e.vidIndex, seriesId: e.seriesId,
+  loadPlaybackCache();
+  const items = [...onlineCache.entries()].map(([key, e]) => ({
+    vid: e.vid || key, quality: e.quality || 'auto', size: e.size, vidIndex: e.vidIndex, seriesId: e.seriesId,
   }));
   return { success: true, count: items.length, bytes: onlineCacheTotal(), items };
 });
@@ -2260,12 +2445,22 @@ function getCompatDir() {
   return compatDir;
 }
 
-function compatFileName(seriesId, vidIndex) {
-  return `${sanitizeFolderName(String(seriesId))}_${String(vidIndex).padStart(3, '0')}.mp4`;
+function compatFileName(seriesId, vidIndex, quality = 'auto') {
+  quality = normalizeDownloadQuality(quality);
+  return `${createHash('sha256').update(String(seriesId)).digest('hex').slice(0, 16)}_${String(vidIndex).padStart(3, '0')}${quality === 'auto' ? '' : '_' + quality}.mp4`;
 }
 
-function compatPathFor(seriesId, vidIndex) {
-  return path.join(getCompatDir(), compatFileName(seriesId, vidIndex));
+function compatPathFor(seriesId, vidIndex, quality = 'auto') {
+  return path.join(getCompatDir(), compatFileName(seriesId, vidIndex, quality));
+}
+function compatIdentity(payload) {
+  let file = null;
+  const original = payload.filePath || playbackEntry(payload.vid, normalizeDownloadQuality(payload.quality))?.filePath;
+  if (original && fs.existsSync(original)) {
+    const stat = fs.statSync(original);
+    file = [path.resolve(original), stat.size, stat.mtimeMs];
+  }
+  return JSON.stringify([String(payload.vid || ''), normalizeDownloadQuality(payload.quality), file]);
 }
 
 function compatCacheStatus() {
@@ -2298,7 +2493,12 @@ function trimCompatCache() {
   entries.sort((a, b) => a.at - b.at); // 最早访问的先删
   for (const e of entries) {
     if (total <= COMPAT_MAX_BYTES) break;
-    try { fs.unlinkSync(e.p); total -= e.size; } catch (_) {}
+    if (compatPreparing.has(e.p)) continue;
+    try {
+      const metadata = JSON.parse(fs.readFileSync(e.p + '.json', 'utf8'));
+      if (playbackWindow && withinPlaybackWindow(metadata)) continue;
+    } catch (_) {}
+    try { fs.unlinkSync(e.p); fs.rmSync(e.p + '.json', { force: true }); total -= e.size; } catch (_) {}
   }
 }
 
@@ -2362,7 +2562,7 @@ function cancelCompatJob(job) {
 }
 ipcMain.handle('cancel-transcode-for-playback', async (_event, payload = {}) => {
   if (!payload.seriesId || payload.vidIndex == null) return { success: false };
-  const key = compatPathFor(payload.seriesId, payload.vidIndex);
+  const key = compatPathFor(payload.seriesId, payload.vidIndex, payload.quality);
   const request = payload.requestId ? compatRequests.get(String(payload.requestId)) : null;
   // An old request must never fall back to cancelling the newest job for this episode.
   if (payload.requestId && (!request || request.key !== key)) return { success: true };
@@ -2376,7 +2576,7 @@ ipcMain.handle('cancel-transcode-for-playback', async (_event, payload = {}) => 
 });
 ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
   if (!payload.seriesId || payload.vidIndex == null) return { success: false, error: '缺少剧集信息' };
-  const key = compatPathFor(payload.seriesId, payload.vidIndex);
+  const key = compatPathFor(payload.seriesId, payload.vidIndex, payload.quality);
   const requestId = String(payload.requestId || randomUUID());
   const existing = compatRequests.get(requestId);
   if (existing) return existing.key === key ? existing.promise : { success: false, error: '请求标识已用于其他剧集' };
@@ -2385,7 +2585,8 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
   let job = previous;
   if (job && !job.cancelled && job.sourceVid !== String(payload.vid || '')) return { success: false, error: '该集已有不同来源的准备请求，请稍后重试' };
   if (!job || job.cancelled) {
-    job = { controller: new AbortController(), cancelled: false, requests: new Map(), sourceVid: String(payload.vid || '') };
+    job = { controller: new AbortController(), cancelled: false, requests: new Map(), sourceVid: String(payload.vid || ''),
+      vid: String(payload.vid || ''), seriesId: String(payload.seriesId), vidIndex: Number(payload.vidIndex), quality: normalizeDownloadQuality(payload.quality) };
     const clearing = compatClearing;
     job.promise = Promise.resolve().then(async () => {
       if (previous) await previous.promise;
@@ -2438,15 +2639,27 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       if (episode.locked) return { success: false, error: '该集已锁定，请在来源平台解锁' };
     }
 
-    const out = compatPathFor(seriesId, vidIndex);
-    if (!force && fs.existsSync(out) && fs.statSync(out).size > 1024 * 100) {
-      // 命中缓存
-      try { fs.utimesSync(out, new Date(), new Date()); } catch (_) {}
-      return { success: true, url: localPlayUrl(out), size: fs.statSync(out).size, cached: true };
-    }
-
+    const quality = normalizeDownloadQuality(payload.quality);
+    const out = compatPathFor(seriesId, vidIndex, quality);
+    const identity = compatIdentity(payload);
     const ffmpegPath = resolveFfmpeg('ffmpeg');
     const ffprobePath = resolveFfmpeg('ffprobe');
+    if (!force && fs.existsSync(out)) {
+      try {
+        const metadata = JSON.parse(fs.readFileSync(out + '.json', 'utf8'));
+        if (metadata.identity !== identity || metadata.size !== fs.statSync(out).size) throw new Error('片源已变化');
+        const info = await probePlaybackFile(out, quality, job);
+        checkCancelled();
+        if (info.codec !== 'h264') throw new Error('兼容缓存编码无效');
+        fs.utimesSync(out, new Date(), new Date());
+        return { success: true, url: localPlayUrl(out), size: fs.statSync(out).size, cached: true, ...info };
+      } catch (error) {
+        checkCancelled();
+        try { fs.unlinkSync(out); } catch (_) {}
+        try { fs.unlinkSync(out + '.json'); } catch (_) {}
+      }
+    }
+
     if (!ffmpegPath) return { success: false, error: '未找到 ffmpeg，无法转码' };
 
     // 1) 优先本地原件；强制重建时跳过在线缓存，重新获取输入。
@@ -2454,23 +2667,16 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
     if (!inputPath || !fs.existsSync(inputPath)) {
       const vid = payload.vid;
       if (!vid) return { success: false, error: '既没有本地文件，也没有 vid' };
-      const cached = !force && onlineCache.get(String(vid));
+      const cached = onlineCache.get(playbackCache.cacheKey(vid, quality)) || (!force && onlineCache.get(String(vid)));
       if (cached?.filePath) { diskInput = cached; cached.disk.readers++; inputPath = cached.filePath; }
-      else {
-        const playInfo = String(vid).startsWith('custom:') ? await hongguo.fetchPlayUrlSingle(String(vid),seriesId,{force:!!force}) : null;
-        tmpInput = path.join(getCompatDir(), `.tmp_${randomUUID()}.mp4`);
-        if (playInfo) await withMediaRecovery(vid,seriesId,{playInfo,signal},async candidate => {
-          if (candidate.format === 'hls') await prepareHlsFile(candidate,tmpInput,{signal});
-          else {
-            const buf = await fetchDecryptedEpisodeOnce(String(vid),()=>{},seriesId,candidate,signal);
-            checkCancelled(); fs.writeFileSync(tmpInput,buf);
-          }
-        });
-        else {
-          const buf = cached?.buffer || await fetchDecryptedEpisode(String(vid), () => {}, seriesId, playInfo, signal, Infinity, !!force);
-          checkCancelled(); fs.writeFileSync(tmpInput,buf);
-        }
-        inputPath = tmpInput;
+      else if (cached?.buffer) {
+        tmpInput = path.join(getCompatDir(), '.tmp_' + randomUUID() + '.mp4');
+        await fsp.writeFile(tmpInput, cached.buffer); inputPath = tmpInput;
+      } else {
+        // Every provider uses the same HLS/MP4 preparation, including a forced rebuild.
+        const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, signal },
+          candidate => prepareDiskEpisode(String(vid), seriesId, quality, candidate, signal, () => {}));
+        diskInput = prepared; prepared.disk.readers++; inputPath = prepared.filePath;
       }
     }
 
@@ -2484,15 +2690,15 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       checkCancelled();
       // 2) 转码（硬件编码器用各自推荐的参数）
       const encArgs = encoder === 'libx264'
-        ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-profile:v', 'high', '-level', '4.2']
+        ? ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-profile:v', 'high']
         : encoder === 'h264_videotoolbox'
         ? ['-c:v', 'h264_videotoolbox', '-b:v', '6M', '-pix_fmt', 'yuv420p']
         : encoder === 'h264_nvenc'
-        ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23', '-b:v', '0']
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', '-b:v', '0']
         : encoder === 'h264_qsv'
-        ? ['-c:v', 'h264_qsv', '-global_quality', '23']
+        ? ['-c:v', 'h264_qsv', '-global_quality', '19']
         : encoder === 'h264_amf'
-        ? ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '23', '-qp_p', '23']
+        ? ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '19', '-qp_p', '19']
         : ['-c:v', encoder, '-cq', '23'];
 
       tmpOut = out + '.part';
@@ -2558,14 +2764,19 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       break;
     }
 
+    const verified = await probePlaybackFile(tmpOut, quality, job);
+    checkCancelled();
+    if (verified.codec !== 'h264') throw new Error('转码输出不是有效的 H.264 视频');
+    if (playbackWindow && !withinPlaybackWindow({ vid: String(payload.vid || ''), seriesId: String(seriesId), quality })) throw new Error('该集已离开自动缓存范围');
     fs.renameSync(tmpOut, out);
-    trimCompatCache();
     const size = fs.statSync(out).size;
+    fs.writeFileSync(out + '.json', JSON.stringify({ version: 1, identity, size, vid: String(payload.vid || ''), seriesId: String(seriesId), vidIndex: Number(vidIndex), quality }), { mode: 0o600 });
+    trimCompatCache();
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     console.log(`[Compat] 完成 ${(size / 1048576).toFixed(1)}MB  用时 ${elapsed}s`);
 
     reportProgress({ seriesId: String(seriesId), vidIndex: Number(vidIndex), percent: 100, done: true });
-    return { success: true, url: localPlayUrl(out), size, elapsed: Number(elapsed), encoder };
+    return { success: true, url: localPlayUrl(out), size, elapsed: Number(elapsed), encoder, ...verified };
   } catch (error) {
     if (signal.aborted) return compatCancelled();
     console.error('[Compat] 转码失败:', error.message);
@@ -2595,7 +2806,7 @@ ipcMain.handle('clear-compat-cache', async () => {
       for (const f of fs.readdirSync(dir)) {
         if (!f.endsWith('.mp4') && !f.endsWith('.part')) continue;
         const p = path.join(dir, f);
-        try { const size = fs.statSync(p).size; fs.unlinkSync(p); freed += size; count++; } catch (_) { failed++; }
+        try { const size = fs.statSync(p).size; fs.unlinkSync(p); fs.rmSync(p + '.json', { force: true }); freed += size; count++; } catch (_) { failed++; }
       }
     } catch (_) { failed++; }
     return { success: failed === 0, count, freed, error: failed ? '部分兼容缓存删除失败，请稍后重试' : undefined };
@@ -2892,6 +3103,8 @@ ipcMain.handle('save-settings', async (event, settings) => {
     const wasCheckingUpdates = getCurrentSettings().app_updates_enabled !== false;
     const merged = { ...getDefaultSettings(), ...(settings || {}), custom_sources:getCurrentSettings().custom_sources };
     merged.download_quality = normalizeDownloadQuality(merged.download_quality);
+    merged.playback_quality = normalizeDownloadQuality(merged.playback_quality);
+    merged.auto_delete_watched = false; // Automatic cache cleanup never deletes manual downloads.
     store.saveSettings(merged);
     if (wasCheckingUpdates !== (merged.app_updates_enabled !== false)) {
       sendToRenderer('app-update-preference', merged.app_updates_enabled !== false);
@@ -3569,7 +3782,9 @@ function createWindow() {
   mainWindow.on('closed', () => {
     stealth.dispose();
     mediaAccess.clear();
-    clearOnlineCache();
+    for (const id of [...onlineSessions.keys()]) releaseOnlineSession(id);
+    for (const job of onlinePreparing.values()) job.controller.abort();
+    for (const [key, entry] of [...onlineCache]) if (!entry.disk?.managed) deleteOnlineCacheEntry(key);
     for (const job of compatPreparing.values()) { job.cancelled = true; job.controller.abort(); }
     mainWindow = null;
   });

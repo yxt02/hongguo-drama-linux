@@ -89,13 +89,13 @@ export function createFrameSampler(doc) {
  *
  *   push({ currentTime, paused, videoWidth, videoDecodedBytes, audioDecodedBytes, luma })
  *
- * 返回 'watch'（继续观察）| 'healthy'（已见正常画面，收工）
+ * 返回 'watch'（继续观察）| 'healthy'（当前可见画面，继续监测）
  *     | 'fail-no-picture' | 'fail-black-screen'。
  *
  * - videoWidth 持续为 0：完全解不出画面。
  * - videoWidth 正常但视频轨 0 字节、音频在解：解不出画面。
  * - 连续纯黑帧 + 播放时间推进 + 音频解码字节在涨（黑屏有声）：黑屏。
- * 一旦采到可见画面即锁存 healthy，避免后续暗场误判。
+ * 正常播放后继续监测解码计数；后续暗场不再只靠颜色触发转码。
  * blackProbeEnabled 为 false 时不做黑屏判定，只保留无画面这类无歧义信号。
  */
 export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
@@ -104,10 +104,11 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
   let blackStart = null; // { time, audioBytes }
   let lastTime = null;
   let done = null;
+  let seenPicture = false, lastVideoBytes = null, lastAudioBytes = null, stalledSamples = 0;
 
   const result = (value) => {
-    if (value !== 'watch') done = value;
-    return done || 'watch';
+    if (value !== 'watch' && value !== 'healthy') done = value;
+    return done || value;
   };
 
   return {
@@ -118,6 +119,7 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
       blackStart = null;
       lastTime = null;
       done = null;
+      seenPicture = false; lastVideoBytes = null; lastAudioBytes = null; stalledSamples = 0;
     },
     push(sample) {
       if (done) return done;
@@ -125,6 +127,13 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
       const time = Number(sample.currentTime);
       if (!Number.isFinite(time)) return 'watch';
       const width = Number(sample.videoWidth) || 0;
+      const videoBytes = sample.videoDecodedBytes, audioBytes = sample.audioDecodedBytes;
+      const advanced = lastTime != null && time > lastTime && time - lastTime < 2;
+      const frozen = advanced && typeof videoBytes === 'number' && typeof audioBytes === 'number'
+        && videoBytes > 0 && videoBytes === lastVideoBytes && lastAudioBytes != null && audioBytes > lastAudioBytes;
+      stalledSamples = frozen ? stalledSamples + 1 : 0;
+      lastVideoBytes = videoBytes; lastAudioBytes = audioBytes;
+      if (stalledSamples >= BLACK_SAMPLES_TO_FAIL) return result('fail-no-picture');
 
       if (!width) {
         blackStreak = 0;
@@ -138,6 +147,7 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
       const luma = sample.luma == null ? null : Number(sample.luma);
       const visible = luma != null && Number.isFinite(luma) && luma > BLACK_LUMA_MAX;
       if (visible) {
+        seenPicture = true; lastTime = time;
         noPicStreak = 0;
         blackStreak = 0;
         blackStart = null;
@@ -161,7 +171,7 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
       }
       noPicStreak = 0;
 
-      if (luma == null || !Number.isFinite(luma) || !blackProbeEnabled) return 'watch';
+      if (luma == null || !Number.isFinite(luma) || !blackProbeEnabled || seenPicture) return 'watch';
 
       if (luma <= BLACK_LUMA_MAX) {
         blackStreak += 1;

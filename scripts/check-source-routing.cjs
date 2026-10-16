@@ -13,7 +13,7 @@ const checks = [
   ['compatibility cache and shared preparation cannot bypass source access', async () => {
     const handlers = {};
     let cacheReads = 0;
-    const context = { AbortController, randomUUID, console, ipcMain: { handle: (name, fn) => handlers[name] = fn },
+    const context = { AbortController, randomUUID, console, normalizeDownloadQuality: require('../src/native/download-quality').normalizeDownloadQuality, ipcMain: { handle: (name, fn) => handlers[name] = fn },
       hongguo: { fetchEpisodeList: async () => ({ episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: true }] }) },
       compatPreparing: new Map(), compatRequests: new Map(), compatClearing: null, compatPathFor: () => 'cached',
       fs: { existsSync: () => { cacheReads++; return true; }, statSync: () => ({ size: 200000 }), utimesSync() {} },

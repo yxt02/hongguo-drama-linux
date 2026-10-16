@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rescanDownloads: () => ipcRenderer.invoke('rescan-downloads'),
 
   // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
+  setPlaybackWindow: payload => ipcRenderer.invoke('set-playback-window', payload),
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),
   releaseOnlinePlay: (payload) => ipcRenderer.invoke('release-online-play', payload),
   onlineCacheStatus: () => ipcRenderer.invoke('online-cache-status'),

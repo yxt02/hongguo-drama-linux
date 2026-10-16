@@ -252,7 +252,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
     const rows = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
-        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
+        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
         const quality = str(item.quality_desc || item.definition || item.height || item.vheight || item.video_meta?.definition);
         const pixels = Number(quality.match(/\d+/)?.[0] || 0);
         const meta = item.video_meta || {};
@@ -260,7 +260,9 @@ async function fetchAppPlayUrl(vid, options = {}) {
             .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
         return { item, codec, codecRank, quality, pixels, width, height };
     }).filter(row => row.codecRank < 2 && meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
-        ? a.codecRank - b.codecRank || b.pixels - a.pixels
+        ? (options.preferQuality
+            ? Math.min(b.width, b.height) - Math.min(a.width, a.height) || b.width * b.height - a.width * a.height || a.codecRank - b.codecRank
+            : a.codecRank - b.codecRank || b.pixels - a.pixels)
         : Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.codecRank - b.codecRank);
     if (!rows.length) throw new Error(requestedQuality === 'auto'
         ? '本集暂未提供兼容的 H.264/HEVC 片源'
@@ -285,7 +287,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
                     seen.add(identity);
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         userAgent: VIDEO_UA, referer: 'https://novelquickapp.com/', quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
-                        ...(requestedQuality === 'auto' ? {} : { width: selected.width, height: selected.height }) });
+                        width: selected.width, height: selected.height });
                 } catch (error) { lastError = error; }
             }
         } catch (error) { lastError = error; }

@@ -99,6 +99,7 @@ function SettingsPage({ active = true, preview = false }) {
       const current = await window.electronAPI.getSettings();
       const editable = ['root', 'name_format', 'download_quality', 'show_danmaku_controls', 'max_concurrent', 'proxy_enabled', 'proxy_mode', 'proxy_host', 'proxy_port', 'proxy_username', 'proxy_password', 'watch_updates_enabled', 'watch_sequels_enabled', 'watch_notifications_enabled', 'app_updates_enabled'];
       const submitted = { ...current };
+      submitted.playback_quality = next.download_quality ?? current.playback_quality ?? 'auto';
       for (const key of editable) if (Object.hasOwn(next, key)) submitted[key] = next[key];
       const res = await window.electronAPI.saveSettings(submitted);
       if (!res?.success) throw new Error(res?.error || '设置未保存，请重试');
@@ -237,15 +238,15 @@ function SettingsPage({ active = true, preview = false }) {
         </div>
 
         <div className="settings-group">
-          <label className="settings-label" htmlFor="default-download-quality">默认下载清晰度</label>
+          <label className="settings-label" htmlFor="default-download-quality">默认播放 / 下载清晰度</label>
           <select id="default-download-quality" className="input-field select-field"
             value={settings.download_quality || 'auto'} aria-describedby="default-download-quality-hint"
             onChange={(event) => update('download_quality', event.target.value)}>
-            <option value="auto">自动（兼容优先）</option>
+            <option value="auto">自动（高清优先）</option>
             <option value="1080p">1080P</option>
             <option value="720p">720P</option>
           </select>
-          <p className="settings-hint" id="default-download-quality-hint">保存后用于新建下载任务，也可在下载时单独选择。所选清晰度不可用时提示，不自动降级；已有文件不自动删除或覆盖。</p>
+          <p className="settings-hint" id="default-download-quality-hint">保存后用于在线播放、自动缓存和新建下载。指定清晰度不可用时提示，不自动降级；手动下载的已有文件继续保留。</p>
         </div>
 
         <div className="settings-group">

@@ -38,6 +38,14 @@ function routeFixture(appError = false) {
   return { ...native, calls };
 }
 const checks = [
+  ['playback auto prefers true high resolution over codec compatibility', async () => {
+    const result = await appFixture({ low: stream('low', 720, 1280, 'h264'), high: stream('high', 1080, 1920, 'hevc') }).fetchAppPlayUrl('11', { preferQuality: true });
+    assert.equal(result.url, mediaUrl('high')); assert.equal(result.width, 1080);
+    const route = routeFixture(); await route.fetchPlayUrlSingle('11', '1', { preferQuality: true });
+    assert.equal(route.calls.includes('web'), false, 'playback tries the App high-quality source first');
+    const fallback = routeFixture(true); const web = await fallback.fetchPlayUrlSingle('11', '1', { preferQuality: true });
+    assert.equal(web.source, 'web', 'auto can recover through the web when App source is unavailable');
+  }],
   ['1080 rejects a fake label with only 720 pixels', async () => {
     await assert.rejects(appFixture({ fake: stream('fake', 720, 1280) }).fetchAppPlayUrl('11', { quality: '1080p' }), /1080p/);
   }],

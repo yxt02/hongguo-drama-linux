@@ -145,9 +145,10 @@ fixed 1080p nor a complete series.
 - **Local first** — downloaded episodes play from disk; undownloaded, unlocked episodes try
   online playback. Double-click an undownloaded episode to queue it.
 - **Basic controls** — click to play/pause, scrub, check time, change volume, mute.
-- **Pre-cache next episode** — a switch next to the auto-next button in 我的剧库, on by default and
-  remembered. Starting an episode pre-caches the next playable one. Downloaded or locked episodes
-  are skipped. This uses data ahead of time; turn the switch off to stop background pre-caching.
+- **Automatic disk cache** — keep the current episode and up to five episodes on each side.
+  Two background workers prioritize upcoming episodes. Leaving the window cancels old tasks and
+  removes automatic originals and compatibility copies; manual downloads are preserved.
+  Completed files are validated and reused after restart.
 - **Auto-next** — on by default; skips locked episodes and chains local with online episodes.
 - **Resume** — episode and position are saved per series; continue from the library or watch
   history. Switching pages in the app keeps playback and progress going.
@@ -162,9 +163,10 @@ fixed 1080p nor a complete series.
   compatibility transcoding. Expired addresses are refreshed a limited number of times; hardware
   transcode failures fall back to software.
 
-H.264 sources are preferred for compatibility, then quality within the same codec; this can mean
-a lower resolution than a HEVC source's best. Software transcoding is slower, and source-service
-errors can still prevent playback.
+Automatic quality prefers App streams ranked by actual resolution, with web fallback when the
+App source is unavailable. Playback, caching and new downloads share the quality choice.
+Unsupported codecs are converted only when needed; software conversion and source-service
+failures can still delay or prevent playback.
 
 ### 3. Picture and window
 
@@ -253,7 +255,7 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.73.1** (`1.73.1` in source); upstream Mac/Windows builds remain at
+The current Linux release is **1.74.0** (`1.74.0` in source); upstream Mac/Windows builds remain at
 1.73. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
@@ -274,6 +276,7 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
+| **1.74.0 (Linux)** | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |
 | 1.73.1 (Linux) | Auto-repair black screen with sound (H.264 fallback); transcode-first for undecodable HEVC |
 | 1.73 | Automatic transient download retries (10/30/60s) |
 | 1.72 | Auto-hide landscape controls; safer media-connection reuse |

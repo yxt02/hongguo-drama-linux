@@ -508,9 +508,9 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
     const skipWeb = (failedWebMedia.get(String(vid)) || 0) > Date.now();
-    const cacheKey = `play:${sid || ''}:${vid}${quality === 'auto' ? '' : `:${quality}`}${skipWeb ? ':fallback' : ''}`;
+    const cacheKey = `play:${sid || ''}:${vid}${quality === 'auto' ? '' : `:${quality}`}${options.preferQuality ? ':hq' : ''}${skipWeb ? ':fallback' : ''}`;
     const result = await cachedRequest(cacheKey, 30000, () => quality === 'auto'
-      ? fetchPlayUrlFresh(vid, sid, skipWeb)
+      ? fetchPlayUrlFresh(vid, sid, skipWeb, options.preferQuality)
       : require('./app-source').fetchAppPlayUrl(String(vid), { quality }).catch(error => {
         throw unavailableSources([sourceFailure('app', error)], quality);
       }), options);
@@ -545,15 +545,18 @@ function unavailableSources(sources, quality = 'auto') {
   return error;
 }
 
-async function fetchPlayUrlFresh(vid, sid, skipWeb = false) {
+async function fetchPlayUrlFresh(vid, sid, skipWeb = false, preferQuality = false) {
   const sources = [];
+  if (preferQuality) {
+    try { return await require('./app-source').fetchAppPlayUrl(String(vid), { preferQuality: true }); }
+    catch (error) { sources.push(sourceFailure('app', error)); }
+  }
   const web = !skipWeb && await fetchPlayUrlFromWeb(vid, sid, error => sources.push(sourceFailure('web', error)));
   if (web && web.url) return web;
 
-  try {
-    return await require('./app-source').fetchAppPlayUrl(String(vid));
-  } catch (error) {
-    sources.push(sourceFailure('app', error));
+  if (!preferQuality) {
+    try { return await require('./app-source').fetchAppPlayUrl(String(vid)); }
+    catch (error) { sources.push(sourceFailure('app', error)); }
   }
 
   const body = {

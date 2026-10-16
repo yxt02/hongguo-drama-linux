@@ -133,21 +133,36 @@ const flatDoc = (luma, { readThrows = false, noCanvas = false } = {}) => ({
     assert.equal(guard.verdict, null);
   });
 
-  await test('a single visible frame latches healthy and later black is ignored', () => {
+  await test('a visible frame disables color-only detection but keeps monitoring', () => {
     const guard = createDecodeGuard();
     assert.equal(guard.push({ currentTime: 1, paused: false, videoWidth: 720, luma: 40 }), 'healthy');
     for (let i = 0; i < BLACK_SAMPLES_TO_FAIL + 2; i++) {
-      assert.equal(guard.push({ currentTime: 1.5 + i * 0.9, paused: false, videoWidth: 720, luma: 0 }), 'healthy');
+      assert.equal(guard.push({ currentTime: 1.5 + i * 0.9, paused: false, videoWidth: 720, luma: 0 }), 'watch');
     }
   });
 
-  await test('a non-black frame is visible picture and ends the watch', () => {
+  await test('a visible frame reports health without ending the watch', () => {
     const guard = createDecodeGuard();
     const push = (time, luma) => guard.push({ currentTime: time, paused: false, videoWidth: 720, luma, audioDecodedBytes: 100 + time * 10 });
     assert.equal(push(1, 0), 'watch');
     assert.equal(push(1.9, 0), 'watch');
     assert.equal(push(2.8, 5), 'healthy', 'anything above pure black means the decoder produces picture');
-    assert.equal(guard.verdict, 'healthy');
+    assert.equal(guard.verdict, null);
+  });
+
+  await test('a later frozen picture with advancing audio is detected after healthy playback', () => {
+    const guard = createDecodeGuard();
+    assert.equal(guard.push({ currentTime: 1, paused: false, videoWidth: 720, luma: 60, videoDecodedBytes: 100, audioDecodedBytes: 100 }), 'healthy');
+    let verdict;
+    for (let i = 1; i <= BLACK_SAMPLES_TO_FAIL; i++) verdict = guard.push({ currentTime: 1 + i * 0.9,
+      paused: false, videoWidth: 720, luma: 60, videoDecodedBytes: 100, audioDecodedBytes: 100 + i * 10 });
+    assert.equal(verdict, 'fail-no-picture');
+  });
+  await test('normal dark scenes with advancing video counters do not trigger repair', () => {
+    const guard = createDecodeGuard();
+    guard.push({ currentTime: 1, paused: false, videoWidth: 720, luma: 60, videoDecodedBytes: 100, audioDecodedBytes: 100 });
+    for (let i = 1; i <= 20; i++) assert.equal(guard.push({ currentTime: 1 + i * 0.9, paused: false,
+      videoWidth: 720, luma: 0, videoDecodedBytes: 100 + i * 20, audioDecodedBytes: 100 + i * 10 }), 'watch');
   });
 
   await test('paused samples are ignored entirely', () => {

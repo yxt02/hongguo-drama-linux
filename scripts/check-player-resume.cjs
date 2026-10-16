@@ -15,7 +15,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
 function mount({ local = false, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
   props = { setEpisodesOpen() {}, ...props };
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
-  const releases = [], settingsSaved = [];
+  const releases = [], settingsSaved = [], windows = [];
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
   // 解码守卫的画布采样与 HEVC 能力探测：测试可控，避免真实 DOM。
   let frameLuma = 128, hevcAnswer = 'probably';
@@ -67,6 +67,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
     getSeriesEpisodes: async () => ({ success: true, data: { series_id: seriesId, series_title: '测试剧', total: episodeCount, episodes } }),
     getPlaybackPosition: async () => saved,
     savePlaybackPosition: async (...args) => saves.push(args),
+    setPlaybackWindow: async p => { windows.push(p); return { success: true }; },
     prepareOnlinePlay: async p => { prepares.push(p); return prepare ? prepare(p) : { success: true, url: `hongguo-stream://mock-${prepares.length}` }; },
     transcodeForPlayback: async p => { transcodes.push(p); return transcode ? transcode(p) : { success: true, url: 'file:///mock-compat.mp4' }; },
     cancelTranscodeForPlayback: async p => cancelled.push(p),
@@ -118,7 +119,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   };
   render();
   return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
-    releases, settingsSaved,
+    releases, settingsSaved, windows,
     setFrameLuma: value => { frameLuma = value; }, setHevcAnswer: value => { hevcAnswer = value; },
     // 驱动解码守卫采样一次（按采样周期排定的定时器）。
     decodeTick: () => { const timer = [...timers.values()].find(t => t.delay === 900); timer?.fn(); return !!timer; },
@@ -205,15 +206,15 @@ if (require.main === module) (async () => {
     assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-2.mp4');
     ui.unmount();
   });
-  await test('manual compatibility retry forces rebuilding and automatic compatibility can stay off', async () => {
-    const ui = mount({ local: true, settings: { compat_mode: false }, transcode: async () => ({ success: false, error: 'software conversion failed' }) });
+  await test('legacy disabled setting no longer disables automatic repair; manual retry rebuilds', async () => {
+    const ui = mount({ local: true, settings: { compat_mode: false } });
     await ui.flush(); ui.metadata(); ui.error(3); await ui.flush();
-    assert.equal(ui.transcodes.length, 0);
+    assert.equal(ui.transcodes.length, 1, 'automatic repair is the default flow');
+    ui.metadata(); ui.error(3); await ui.flush();
+    assert.equal(ui.transcodes[1].force, true);
+    ui.metadata(); ui.error(3); await ui.flush();
     await ui.button('转码后播放').props.onClick(); await ui.flush();
-    assert.equal(ui.transcodes[0].force, true, 'explicit retry must not reuse a failed cache');
-    assert.ok(ui.find(n => n.props.role === 'alert' && n.children.includes('software conversion failed')), 'retain diagnostic message after toast expires');
-    ui.error(3); await ui.flush(); assert.equal(ui.transcodes.length, 1);
-    ui.unmount();
+    assert.equal(ui.transcodes.at(-1).force, true, 'explicit retry rebuilds compatibility output'); ui.unmount();
   });
   await test('failed automatic transcode does not loop on repeated decode events', async () => {
     const ui = mount({ local: true, transcode: async () => ({ success: false, error: 'mock failure' }) }); await ui.flush(); ui.metadata();
@@ -232,14 +233,11 @@ if (require.main === module) (async () => {
     assert.equal(pending.find(n => n.type === 'video').props.src, 'file:///mock-2.mp4'); pending.unmount();
   });
   await test('reconnecting online does not transcode the failed local download again', async () => {
-    const ui = mount({ local: true, settings: { cache_next_episode: false, compat_mode: false }, transcode: async () => ({ success: false, error: 'bad local media' }) });
+    const ui = mount({ local: true, transcode: async () => ({ success: false, error: 'bad local media' }) });
     await ui.flush(); ui.metadata(); ui.error(3); await ui.flush();
-    await ui.button('转码后播放').props.onClick(); await ui.flush();
     assert.equal(ui.transcodes[0].filePath, '/mock-1.mp4');
-    await ui.button('重新连接片源').props.onClick(); await ui.flush(); ui.metadata();
-    ui.error(3); await ui.flush(); await ui.button('转码后播放').props.onClick(); await ui.flush();
-    assert.equal(ui.transcodes[1].filePath, null, 'online recovery must use its online source');
-    ui.unmount();
+    ui.metadata(); ui.error(3); await ui.flush();
+    assert.equal(ui.transcodes[1].filePath, null, 'online recovery must use the online original'); ui.unmount();
   });
   await test('failed local conversion followed by unavailable online source does not invent a decode failure', async () => {
     const ui = mount({ local: true, transcode: async () => ({ success: false, error: 'mock failure' }) });
@@ -256,11 +254,11 @@ if (require.main === module) (async () => {
   await test('network failure refreshes the same episode once and retains position', async () => {
     const ui = mount({ settings: { cache_next_episode: false } }); await ui.flush(); await ui.button('在线播放').props.onClick(); await ui.flush(); ui.metadata();
     ui.media.currentTime = 42; ui.error(2); await ui.flush();
-    assert.equal(ui.prepares.length, 2, 'network failure should reconnect once');
-    assert.equal(ui.prepares[1].force, true);
+    assert.equal(ui.prepares.filter(p => !p.prefetch).length, 2, 'network failure should reconnect once');
+    assert.equal(ui.prepares.filter(p => !p.prefetch)[1].force, true);
     ui.metadata(); assert.equal(ui.media.currentTime, 42);
     ui.error(2); await ui.flush();
-    assert.equal(ui.prepares.length, 2, 'persistent network failure must stop');
+    assert.equal(ui.prepares.filter(p => !p.prefetch).length, 2, 'persistent network failure must stop');
     assert.ok(ui.button('重试本集')); ui.unmount();
   });
   await test('failed local conversion falls back online once without deleting the download', async () => {

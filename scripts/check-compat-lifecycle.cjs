@@ -25,11 +25,17 @@ function load({ permission, manual = false, probe, encoder = 'libx264', exitCode
     const exitCode = exitCodes[children.length] ?? 0;
     children.push(child); if (!manual) setImmediate(() => child.finish(child.killed ? 143 : exitCode)); return child;
   } };
-  const native = { fetchEpisodeList: async () => { metrics.permissions++; return permission ? permission() : { episodes: [{ vid: 'xifan:v', vid_index: 1, locked: false }] }; } };
+  const native = { fetchPlayUrlSingle: async () => ({ url: 'https://fixture.invalid/video.mp4', codec: 'hevc' }), fetchEpisodeList: async () => { metrics.permissions++; return permission ? permission() : { episodes: [{ vid: 'xifan:v', vid_index: 1, locked: false }] }; } };
   const context = vm.createContext({ require: name => name === 'electron' ? electron : name === 'child_process' ? childProcess : name === './src/native/hongguo' ? native : name === './src/store' ? {} : req(name), __dirname: path.dirname(source), process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout, console: { log() {}, error() {}, warn() {} } });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
   context.resolveFfmpeg = () => '/fixture/ffmpeg';
-  context.fetchDecryptedEpisode = async () => { metrics.media++; return Buffer.alloc(120000); };
+  context.prepareDiskEpisode = async () => {
+    metrics.media++;
+    const directory = fs.mkdtempSync(path.join(dir, 'input-'));
+    const filePath = path.join(directory, 'video.mp4'); fs.writeFileSync(filePath, Buffer.alloc(120000));
+    return { filePath, disk: { directory, readers: 0, managed: true } };
+  };
+  context.probeVideoInfo = async () => ({ codec: 'h264', w: 1080, h: 1920, duration: 1 });
   context.probeDuration = probe || (async () => 1);
   context.pickH264Encoder = async () => { metrics.encoder++; return encoder; };
   context.sendToRenderer = (name, data) => events.push({ name, ...data });
@@ -38,7 +44,8 @@ function load({ permission, manual = false, probe, encoder = 'libx264', exitCode
 const payload = requestId => ({ seriesId: 'xifan:S', vid: 'xifan:v', vidIndex: 1, requestId, force: true });
 const unlocked = { episodes: [{ vid: 'xifan:v', vid_index: 1, locked: false }] };
 async function check(name, fn) { try { await fn(); console.log('PASS ' + name); } catch (error) { failures++; console.error('FAIL ' + name + ': ' + error.message); } }
-(async () => {
+module.exports = { load, root };
+if (require.main === module) (async () => {
   await check('cancel during source permission lookup prevents media and encoder work', async () => {
     const gate = deferred(), h = load({ permission: () => gate.promise });
     const started = h.handlers['transcode-for-playback']({}, payload('permission-cancel')); await tick();
@@ -108,7 +115,7 @@ async function check(name, fn) { try { await fn(); console.log('PASS ' + name); 
     assert.equal(h.metrics.permissions, 1, 'new work started during cache cleanup');
     gate.resolve(unlocked); await clearing;
     assert.equal((await old).success, false); assert.equal((await next).success, true);
-    assert.equal(h.metrics.media, 1); assert.equal(fs.readdirSync(h.context.getCompatDir()).length, 1);
+    assert.equal(h.metrics.media, 1); assert.equal(fs.readdirSync(h.context.getCompatDir()).filter(n => n.endsWith('.mp4')).length, 1);
   });
   await check('actual hardware failure retries once with software and reports final encoder', async () => {
     const h = load({ encoder: 'h264_videotoolbox', exitCodes: [1, 0] });
@@ -116,7 +123,7 @@ async function check(name, fn) { try { await fn(); console.log('PASS ' + name); 
     assert.equal(result.success, true, 'hardware failure should retry in software');
     assert.equal(result.encoder, 'libx264'); assert.equal(h.children.length, 2);
     assert.deepEqual(h.children.map(child => child.args[child.args.indexOf('-c:v') + 1]), ['h264_videotoolbox', 'libx264']);
-    assert.deepEqual(fs.readdirSync(h.context.getCompatDir()), [path.basename(h.context.compatPathFor('xifan:S', 1))]);
+    assert.deepEqual(fs.readdirSync(h.context.getCompatDir()).filter(n => n.endsWith('.mp4')), [path.basename(h.context.compatPathFor('xifan:S', 1))]);
   });
   await check('software fallback failure stops after two attempts and cleans temporary files', async () => {
     const h = load({ encoder: 'h264_nvenc', exitCodes: [1, 2] });
@@ -157,6 +164,33 @@ async function check(name, fn) { try { await fn(); console.log('PASS ' + name); 
     assert.equal(result.success, false); assert.match(result.error, /软件转码失败.*9/);
     assert.equal(h.children.length, 1); assert.equal(h.metrics.encoder, 0);
     assert.deepEqual(fs.readdirSync(h.context.getCompatDir()), []);
+  });
+  await check('unverified old cache rebuilds; verified cache reuses only the matching source', async () => {
+    const h = load(), request = { seriesId: 'S', vidIndex: 1, vid: 'v1', requestId: 'cache-1', force: false };
+    const out = h.context.compatPathFor('S', 1); fs.writeFileSync(out, Buffer.alloc(120000));
+    const first = await h.handlers['transcode-for-playback']({}, request);
+    assert.equal(first.success, true); assert.notEqual(first.cached, true); assert.equal(h.children.length, 1);
+    const second = await h.handlers['transcode-for-playback']({}, { ...request, requestId: 'cache-2' });
+    assert.equal(second.cached, true); assert.equal(h.children.length, 1);
+    const changed = await h.handlers['transcode-for-playback']({}, { ...request, vid: 'v2', requestId: 'cache-3' });
+    assert.equal(changed.success, true); assert.notEqual(changed.cached, true); assert.equal(h.children.length, 2);
+  });
+  await check('invalid matching cache is probed and rebuilt instead of accepted by file size', async () => {
+    const h = load(), request = { seriesId: 'S', vidIndex: 1, vid: 'v1', requestId: 'corrupt-1' };
+    await h.handlers['transcode-for-playback']({}, request);
+    const out = h.context.compatPathFor('S', 1);
+    h.context.probeVideoInfo = async (_probe, file) => file === out ? null : { codec: 'h264', w: 1080, h: 1920, duration: 1 };
+    const repaired = await h.handlers['transcode-for-playback']({}, { ...request, requestId: 'corrupt-2' });
+    assert.equal(repaired.success, true); assert.notEqual(repaired.cached, true); assert.equal(h.children.length, 2);
+  });
+  await check('invalid encoded output is never published as completed compatibility media', async () => {
+    const h = load(); h.context.probeVideoInfo = async () => null;
+    const result = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 1, vid: 'v1', requestId: 'bad-output' });
+    assert.equal(result.success, false); assert.deepEqual(fs.readdirSync(h.context.getCompatDir()), []);
+  });
+  await check('quality and punctuation-distinct series have separate compatibility cache paths', () => {
+    const h = load(); assert.notEqual(h.context.compatPathFor('a:b', 1), h.context.compatPathFor('ab', 1));
+    assert.notEqual(h.context.compatPathFor('S', 1, '720p'), h.context.compatPathFor('S', 1, '1080p'));
   });
   assert.equal(failures, 0, `${failures} compatibility lifecycle regressions`);
 })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(() => fs.rmSync(root, { recursive: true, force: true }));
