@@ -8,7 +8,7 @@
  *   4. 下载管理：进度推送、暂停/取消、重试、删除、打开所在文件夹
  *   5. 设置：下载目录、命名规则、并发数（JSON 文件持久化）
  */
-const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol, Menu, Notification, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol, Menu, Notification, screen, Tray, nativeImage } = require('electron');
 const path = require('path');
 const IS_PREVIEW = require('./package.json').name === 'hongguo-experience-preview';
 if (IS_PREVIEW) {
@@ -17,7 +17,7 @@ if (IS_PREVIEW) {
 }
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
-else app.on('second-instance', () => app.emit('activate'));
+else app.on('second-instance', (_event, argv = []) => argv.includes('--quit') ? app.quit() : app.emit('activate'));
 const fs = require('fs');
 const fsp = require('fs/promises');
 const axios = require('axios');
@@ -43,6 +43,14 @@ const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
 const { createStealthController } = require('./src/native/stealth-window');
 
 let mainWindow = null;
+let shuttingDown = false;
+const lifecycle = process.platform === 'linux' ? require('./src/native/app-lifecycle').createAppLifecycle({
+  app, Tray, Menu, nativeImage, iconPath: path.join(__dirname, 'build/icon.png'),
+  getWindow: () => mainWindow, showWindow: () => app.emit('activate'),
+  getSettings: getCurrentSettings,
+  saveBehavior: close_behavior => store.saveSettings({ ...getCurrentSettings(), close_behavior }),
+  cleanup: shutdownBackgroundWork, send: sendToRenderer, title: APP_TITLE,
+}) : null;
 let storageError = null;
 store.setErrorHandler?.(payload => {
   storageError = payload;
@@ -179,6 +187,7 @@ function getDefaultSettings() {
     compat_mode: true,
     cache_next_episode: true,
     app_updates_enabled: !IS_PREVIEW,
+    close_behavior: 'quit',
     watch_updates_enabled: true,
     watch_sequels_enabled: true,
     watch_notifications_enabled: false,
@@ -463,6 +472,7 @@ function visibleSeries() {
 // 导致并发数恒为 1（无论 max_concurrent 设为多少）。
 // 现在由 runTask 自行在结束时回调 pumpQueue，调度器只负责按并发上限派发。
 function pumpQueue() {
+  if (shuttingDown) return;
   downloadQueue = downloadQueue.filter(task => task.status === 'pending');
   for (const task of downloadQueue) repairTaskDestination(task);
   while (activeDownloads < MAX_CONCURRENT_DOWNLOADS) {
@@ -524,6 +534,7 @@ function isDeferrableSourceError(task, error) {
 }
 
 function armSourceRetry(task) {
+  if (shuttingDown) return;
   clearTimeout(sourceRetryTimers.get(task.id));
   const at = task.retryAt;
   sourceRetryTimers.set(task.id, setTimeout(() => {
@@ -3106,6 +3117,7 @@ ipcMain.handle('save-settings', async (event, settings) => {
     merged.playback_quality = normalizeDownloadQuality(merged.playback_quality);
     merged.auto_delete_watched = false; // Automatic cache cleanup never deletes manual downloads.
     store.saveSettings(merged);
+    lifecycle?.refresh();
     if (wasCheckingUpdates !== (merged.app_updates_enabled !== false)) {
       sendToRenderer('app-update-preference', merged.app_updates_enabled !== false);
     }
@@ -3751,6 +3763,50 @@ ipcMain.handle('set-window-layout', async (event, mode) => {
 });
 
 // ===== 窗口创建 =====
+const lifecycleRequestAllowed = event => !!mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame;
+ipcMain.handle('get-app-lifecycle-state', event => lifecycleRequestAllowed(event) && lifecycle ? lifecycle.state() : { supported: false });
+ipcMain.handle('set-close-behavior', (event, value) => lifecycleRequestAllowed(event) && lifecycle ? lifecycle.setBehavior(value) : { success: false, error: '窗口请求无效' });
+ipcMain.handle('hide-to-tray', event => lifecycleRequestAllowed(event) && lifecycle ? lifecycle.hide() : { success: false, error: '托盘不可用' });
+ipcMain.handle('minimize-window', event => {
+  if (!lifecycleRequestAllowed(event)) return { success: false, error: '窗口请求无效' };
+  mainWindow.minimize(); return { success: true };
+});
+ipcMain.handle('quit-app', event => {
+  if (!lifecycleRequestAllowed(event)) return { success: false, error: '窗口请求无效' };
+  setTimeout(() => app.quit(), 50); return { success: true };
+});
+
+async function shutdownBackgroundWork() {
+  shuttingDown = true;
+  downloadQueue = [];
+  for (const timer of sourceRetryTimers.values()) clearTimeout(timer);
+  sourceRetryTimers.clear();
+  for (const task of downloadTasks) if (task.status === 'downloading') {
+    // Keep interrupted downloads pending so an update/restart can resume them.
+    task.status = 'pending'; task.cancelled = true;
+    try { task.cancelSource?.cancel('程序退出'); } catch (_) {}
+    try { task.writer?.destroy(); } catch (_) {}
+  }
+  const pending = [...downloadRuns.values(), ...[...onlinePreparing.values()].map(job => job.promise), ...[...compatPreparing.values()].map(job => job.promise)];
+  for (const id of [...onlineSessions.keys()]) releaseOnlineSession(id);
+  for (const job of onlinePreparing.values()) job.controller.abort();
+  for (const job of compatPreparing.values()) cancelCompatJob(job);
+  for (const task of mergeTasks) if (task.status === 'running') {
+    for (const child of new Set([task.child, ...(task.children || [])].filter(Boolean))) {
+      if (child.exitCode == null && child.signalCode == null) pending.push(new Promise(resolve => child.once('close', resolve)));
+    }
+    task.cancelled = true;
+    require('./src/native/merge-runner').stopMergeChildren(task);
+    task.status = 'stopped'; task.stageText = '应用退出时中断';
+  }
+  stealth.dispose(); mediaAccess.clear();
+  if (searchWindow && !searchWindow.isDestroyed()) searchWindow.destroy();
+  try { saveDownloadTasks(); saveMergeTasks(); } catch (_) { /* Existing storage-error reports failures. */ }
+  let timer;
+  try { await Promise.race([Promise.allSettled(pending), new Promise(resolve => { timer = setTimeout(resolve, 3500); })]); }
+  finally { clearTimeout(timer); }
+}
+
 function createWindow() {
   windowLayout = 'landscape';
   landscapeBounds = null;
@@ -3776,6 +3832,7 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   episodePanel.attach(mainWindow);
+  lifecycle?.attach(mainWindow);
   mainWindow.webContents.once('did-finish-load', () => {
     if (storageError) sendToRenderer('storage-error', storageError);
   });
@@ -3801,6 +3858,7 @@ function createWindow() {
 
 // ===== 应用生命周期 =====
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  if (process.argv.includes('--quit')) { app.quit(); return; }
   const dataFile = path.join(app.getPath('userData'), 'data.json');
   store.init(dataFile);
   loadDownloadTasks();
@@ -3833,6 +3891,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     mainWindow.show();
     mainWindow.focus();
   });
+
+  if (lifecycle) await lifecycle.start();
 
   if (process.platform === 'darwin') {
     Menu.setApplicationMenu(Menu.buildFromTemplate([

@@ -62,8 +62,15 @@ hongguo --update --restart
 ```
 
 完整 Linux x64 目录包支持快捷更新，无需另装 Node.js；AppImage 等方式请手动下载安装。
-首次从旧版升级：退出旧版后运行本包的 `./升级现有安装.sh`，直接替换原安装，完成后自动启动，无需卸载或再次下载。
+首次从旧版升级：运行本包的 `./升级现有安装.sh`，自动关闭该安装的旧版及残留后台进程，直接替换原安装并重新启动，无需卸载或再次下载。
 默认升级 `~/.local/opt/hongguo-drama`，自定义安装可设置 `HONGGUO_INSTALL_DIR`。
+
+### 系统托盘与退出（1.74.2 起）
+
+系统托盘图标菜单提供“显示主窗口”“最小化到托盘”“点 X 时”和“退出程序”。
+设置 → 窗口与托盘中可选择点 X 退出程序（默认）或最小化到托盘，选择立即保存。
+托盘中继续运行后台任务；“退出程序”和一键更新会等待下载/转码收尾，并关闭隐藏搜索窗口。
+系统托盘不可用时不会隐藏窗口，可使用普通最小化或退出。终端也可执行 `hongguo --quit`。
 
 **为什么必须用启动器，不能直接跑 `app/hongguo-downloader`？**
 Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，所以应用内无法补救。Ubuntu 23.10+ 的 AppArmor 会阻止用户命名空间沙箱，未提权的 `chrome-sandbox` 又会让 Chromium 直接中止。启动器检测到该组合时自动补 `--no-sandbox`，其余情况不加、保持默认沙箱。
@@ -77,7 +84,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.74.1**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.74.2**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 | 安装方式 |
 |---|---|---|
@@ -336,7 +343,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.1**（源码配置版本 `1.74.1`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.2**（源码配置版本 `1.74.2`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
 1.73 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
 
@@ -347,7 +354,8 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
-| **1.74.1（Linux）** | 一键下载、校验并重启更新，旧版备份及失败回滚，无需卸载重装 | [发行说明](docs/release-1.74.1-linux.md) |
+| **1.74.2（Linux）** | 系统托盘菜单、点 X 行为选择、完整退出及隐藏搜索窗口残留修复 | [发行说明](docs/release-1.74.2-linux.md) |
+| 1.74.1（Linux） | 一键下载、校验并重启更新，旧版备份及失败回滚，无需卸载重装 | [发行说明](docs/release-1.74.1-linux.md) |
 | 1.74.0（Linux） | 前后各五集磁盘缓存、统一高清优先选择、缓存校验与 HLS 转码修复 | [发行说明](docs/release-1.74-linux.md) |
 | 1.73.1（Linux） | 黑屏有声自动转 H.264；HEVC 不支持时直接转兼容格式 | [发行页](https://github.com/yxt02/hongguo-drama-linux/releases) |
 | 1.6 | 下载清晰度、本集弹幕、播放与下载恢复 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6) |

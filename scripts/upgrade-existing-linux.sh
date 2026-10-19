@@ -8,4 +8,4 @@ if [ ! -d "$TARGET/app" ]; then
     echo "可设置 HONGGUO_INSTALL_DIR 指向旧安装目录，或运行 install.sh 首次安装。" >&2
     exit 1
 fi
-exec env ELECTRON_RUN_AS_NODE=1 "$HERE/app/hongguo-downloader" "$HERE/linux-update.cjs" --target "$TARGET" --bundle "$HERE" --restart
+exec env ELECTRON_RUN_AS_NODE=1 "$HERE/app/hongguo-downloader" "$HERE/linux-update.cjs" --target "$TARGET" --bundle "$HERE" --close-running --restart

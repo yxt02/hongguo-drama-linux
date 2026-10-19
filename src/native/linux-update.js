@@ -114,6 +114,32 @@ async function waitForExit(pid, timeout = 120000) {
   const deadline = Date.now() + timeout;
   while (alive(pid)) { if (Date.now() > deadline) throw new Error('旧版仍在运行，请退出后重新更新'); await new Promise(r => setTimeout(r, 250)); }
 }
+async function runningProcesses(target) {
+  const executable = path.join(path.resolve(target), 'app/hongguo-downloader');
+  const processes = [];
+  for (const pid of (await fsp.readdir('/proc')).filter(p => /^\d+$/.test(p) && Number(p) !== process.pid)) {
+    const link = await fsp.readlink('/proc/' + pid + '/exe').catch(() => '');
+    if (link !== executable) continue;
+    const argv = (await fsp.readFile('/proc/' + pid + '/cmdline').catch(() => Buffer.alloc(0))).toString().split('\0');
+    processes.push({ pid: Number(pid), helper: argv.some(arg => arg.startsWith('--type=')) });
+  }
+  return processes;
+}
+async function waitForTargetExit(target, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while ((await runningProcesses(target)).length) {
+    if (Date.now() > deadline) throw new Error('旧版后台进程仍未退出，请从托盘菜单退出程序后再更新');
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+async function closeRunning(target) {
+  // Only the selected installation's main processes; never kill by a broad name.
+  for (const { pid, helper } of await runningProcesses(target)) if (!helper) {
+    if (await fsp.readlink('/proc/' + pid + '/exe').catch(() => '') !== path.join(path.resolve(target), 'app/hongguo-downloader')) continue;
+    try { process.kill(pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  }
+  await waitForTargetExit(target);
+}
 async function install(root, target, version, { rename = fsp.rename } = {}) {
   target = path.resolve(target); validateBundle(target); validateBundle(root, version);
   if (target === path.parse(target).root || path.resolve(root).startsWith(target + path.sep)) throw new Error('不能从安装目录内部替换自身');
@@ -138,7 +164,8 @@ function restart(target) {
 async function runJob(job) {
   let result;
   try {
-    await waitForExit(job.pid); result = { success: true, ...await install(job.root, job.target, job.version) };
+    await waitForExit(job.pid); await waitForTargetExit(job.target);
+    result = { success: true, ...await install(job.root, job.target, job.version) };
   } catch (error) { result = { success: false, error: error.message }; }
   if (job.resultFile) await fsp.writeFile(job.resultFile, JSON.stringify(result), { mode: 0o600 }).catch(error => console.error('无法保存更新结果：' + error.message));
   if (job.restart && fs.existsSync(path.join(job.target, '红果短剧.sh'))) restart(job.target);
@@ -168,16 +195,11 @@ async function runCli(args = process.argv.slice(2)) {
     }
     console.log('正在校验并准备 ' + version + ' ...');
     if (!root) root = await unpack(archive, workdir, version);
-    if (option('--wait-pid')) await waitForExit(Number(option('--wait-pid')));
-    else {
-      const proc = await fsp.readdir('/proc'); const executable = path.join(path.resolve(target), 'app/hongguo-downloader');
-      for (const pid of proc.filter(p => /^\d+$/.test(p))) {
-        const link = await fsp.readlink('/proc/' + pid + '/exe').catch(() => '');
-        if (link === executable && Number(pid) !== process.pid) throw new Error('请先退出正在运行的红果短剧，再执行更新');
-      }
-    }
+    if (args.includes('--close-running')) { console.log('正在关闭旧版及后台进程 ...'); await closeRunning(target); }
+    else if (option('--wait-pid')) { await waitForExit(Number(option('--wait-pid'))); await waitForTargetExit(target); }
+    else if ((await runningProcesses(target)).length) throw new Error('请先从托盘或设置中退出程序，或使用 --close-running 关闭旧版后更新');
     const result = await install(root, target, version); console.log('更新完成：' + result.version + '\n旧版备份：' + result.backup);
     if (args.includes('--restart')) restart(target); return result;
   } finally { await fsp.rm(workdir, { recursive: true, force: true }); }
 }
-module.exports = { readVersion, validateBundle, detectBundle, expectedHash, sha256, latest, download, unpack, install, waitForExit, runJob, runCli, requestOptions };
+module.exports = { readVersion, validateBundle, detectBundle, expectedHash, sha256, latest, download, unpack, install, waitForExit, runningProcesses, closeRunning, waitForTargetExit, runJob, runCli, requestOptions };

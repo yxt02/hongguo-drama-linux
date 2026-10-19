@@ -1,0 +1,28 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const { createRequire } = require('node:module');
+const file=path.resolve(__dirname,'../main.js'), req=createRequire(file), app=new EventEmitter();
+Object.assign(app,{getVersion:()=> '1.74.2',getPath:()=>'/synthetic',requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),commandLine:{appendSwitch(){}}});
+let saved, destroyed=0, cancelled=0, writerClosed=0, killed=0;
+const store={setErrorHandler(){},getSettings:()=>({}),saveTasks:rows=>{saved=rows;},saveMergeTasks(){}};
+const electron={app,ipcMain:{handle(){}},protocol:{registerSchemesAsPrivileged(){}}};
+const context=vm.createContext({require:name=>name==='electron'?electron:name==='./src/store'?store:req(name),__dirname:path.dirname(file),process,Buffer,URL,AbortController,setTimeout,clearTimeout,console:{log(){},warn(){},error(){}}});
+vm.runInContext(fs.readFileSync(file,'utf8'),context,{filename:file});
+const child=new EventEmitter();child.kill=()=>{killed++;queueMicrotask(()=>{child.exitCode=0;child.emit('close',0);});};
+const online=new AbortController(),compat=new AbortController();
+Object.assign(context,{task:{id:'x',status:'downloading',cancelSource:{cancel(){cancelled++;}},writer:{destroy(){writerClosed++;}}},testSearch:{isDestroyed:()=>false,destroy(){destroyed++;}},testChild:child,testOnline:online,testCompat:compat});
+vm.runInContext("downloadTasks=[task]; downloadQueue=[task]; downloadRuns.set('x',Promise.resolve()); sourceRetryTimers.set('x',setTimeout(()=>{throw Error('retry not cleared')},1000)); searchWindow=testSearch; onlinePreparing.set('online',{controller:testOnline,promise:Promise.resolve()}); compatPreparing.set('compat',{controller:testCompat,promise:Promise.resolve()}); mergeTasks=[{id:'m',status:'running',child:testChild}];",context);
+(async()=>{
+ await vm.runInContext('shutdownBackgroundWork()',context);
+ assert.equal(cancelled,1);assert.equal(writerClosed,1);assert.equal(destroyed,1);assert.ok(killed);
+ assert.ok(online.signal.aborted && compat.signal.aborted);
+ assert.equal(saved[0].status,'pending');assert.equal(saved[0].cancelSource,undefined);assert.equal(saved[0].writer,undefined);
+ assert.equal(vm.runInContext('sourceRetryTimers.size',context),0);assert.equal(vm.runInContext('shuttingDown',context),true);
+ assert.equal(vm.runInContext('mergeTasks[0].status',context),'stopped');
+ vm.runInContext('downloadQueue=[{status:"pending"}];pumpQueue()',context);
+ assert.equal(vm.runInContext('activeDownloads',context),0,'shutdown must not dispatch new work');
+ console.log('PASS main shutdown: hidden search destroyed, download writer cancelled and persisted pending, retries stopped, cache/transcode aborted, FFmpeg killed and drained, no new dispatch');
+})().catch(e=>{console.error(e);process.exitCode=1});

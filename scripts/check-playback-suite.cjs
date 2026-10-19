@@ -37,7 +37,11 @@ const checks = [
   "check-app-update.cjs",
   "check-linux-update.cjs",
   "check-linux-update-controller.cjs",
-  "check-update-controls.cjs"
+  "check-update-controls.cjs",
+  "check-app-lifecycle.cjs",
+  "check-app-shutdown.cjs",
+  "check-window-controls.cjs",
+  "check-running-app-update.cjs"
 ];
 let failed = 0;
 for (const file of checks) {

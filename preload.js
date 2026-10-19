@@ -10,6 +10,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('stealth-state', listener);
   },
   // 应用信息 / 官网链接
+  getAppLifecycleState: () => ipcRenderer.invoke('get-app-lifecycle-state'),
+  setCloseBehavior: value => ipcRenderer.invoke('set-close-behavior', value),
+  hideToTray: () => ipcRenderer.invoke('hide-to-tray'),
+  minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
+  quitApp: () => ipcRenderer.invoke('quit-app'),
+  onAppLifecycleState: cb => {
+    const listener = (_event, value) => cb(value);
+    ipcRenderer.on('app-lifecycle-state', listener);
+    return () => ipcRenderer.removeListener('app-lifecycle-state', listener);
+  },
   checkAppUpdate: (options) => ipcRenderer.invoke('check-app-update', options),
   getAppUpdateState: () => ipcRenderer.invoke('get-app-update-state'),
   downloadAppUpdate: () => ipcRenderer.invoke('download-app-update'),
