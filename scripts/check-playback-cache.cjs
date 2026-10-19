@@ -18,7 +18,7 @@ function load(directory) {
   const handlers = {}, events = [], metrics = { transfers: 0, probes: 0, sources: [], hls: 0 };
   const app = new EventEmitter();
   Object.assign(app, { getPath: () => root, getVersion: () => 'test', commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
-  const native = { fetchPlayUrlSingle: async (vid, sid, options) => { metrics.sources.push(options); return { vid, url: 'https://fixture.invalid/' + vid + '/' + options.quality, codec: 'hevc' }; } };
+  const native = { fetchPlayUrlSingle: async (vid, sid, options) => { metrics.sources.push(options); return { vid, source: 'app', url: 'https://fixture.invalid/' + vid + '/' + options.quality, codec: 'hevc' }; } };
   const context = vm.createContext({ require: n => n === 'electron' ? { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {} } }
     : n === './src/native/hongguo' ? native : n === './src/store' ? {} : req(n), __dirname: path.dirname(source), process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout, console });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
@@ -76,6 +76,19 @@ if (require.main === module) (async () => {
     const restarted = load(h.root); window(restarted, 10); const next = await prepare(restarted, 10);
     assert.equal(next.success, true); assert.equal(next.cached, true); assert.equal(restarted.metrics.transfers, 0); assert.equal(restarted.metrics.probes, 1);
     await release(restarted, next); restarted.context.clearOnlineCache();
+  });
+  await check('upgrade discards old web and unknown Hongguo automatic caches, retains App and manual files', async () => {
+    for (const origin of ['web', 'api', undefined, 'app', 'manual']) {
+      const h = load(); window(h, 10); const first = await prepare(h, 10); await release(h, first);
+      const entry = h.run("onlineCache.get('disk:auto:v10')");
+      entry.mediaSource = origin; policy.save(entry);
+      const manual = path.join(h.root, 'user-download.mp4'); fs.writeFileSync(manual, 'original');
+      const restarted = load(h.root); window(restarted, 10); const next = await prepare(restarted, 10);
+      assert.equal(next.success, true); const keep = ['app', 'manual'].includes(origin);
+      assert.equal(next.cached, keep); assert.equal(restarted.metrics.transfers, keep ? 0 : 1);
+      assert.equal(fs.existsSync(entry.filePath), keep); assert.equal(fs.readFileSync(manual, 'utf8'), 'original');
+      await release(restarted, next); restarted.context.clearOnlineCache();
+    }
   });
   await check('same-size corrupt cache is rejected after restart and repaired', async () => {
     const h = load(); window(h, 10); const a = await prepare(h, 10); await release(h, a);

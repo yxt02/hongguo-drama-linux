@@ -342,7 +342,7 @@ function HongguoDownload({ onNavigate, active = true }) {
                 <select className="input-field" value={downloadQuality}
                   aria-describedby="batch-quality-hint" disabled={qualityLoading || submitting}
                   onChange={(event) => setDownloadQuality(event.target.value)}>
-                  <option value="auto">自动（兼容优先）</option>
+                  <option value="auto">自动（App 最高画质）</option>
                   <option value="1080p">1080P</option>
                   <option value="720p">720P</option>
                 </select>
@@ -367,7 +367,7 @@ function HongguoDownload({ onNavigate, active = true }) {
           <p className="settings-hint batch-quality-hint" id="batch-quality-hint">新建下载任务生效；所选清晰度不可用时提示，不自动降级。已有文件不自动删除或覆盖。</p>
 
           {seriesData.web_accessible_episodes != null && seriesData.web_accessible_episodes < seriesData.total && (
-            <p className="settings-hint">网页源提供前 {seriesData.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</p>
+            <p className="settings-hint">默认使用 App 高清源，完整目录均可尝试取源，具体可播情况以 App 接口返回为准。</p>
           )}
 
           {seriesData.episodes.some((ep) => ep.locked) && <p className="settings-hint">锁定集需在来源平台解锁，本应用不提供解锁；全选和范围选择会自动跳过。</p>}

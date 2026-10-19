@@ -84,7 +84,7 @@ const checks = [
       assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
     }
   }],
-  ['Web keeps null compatibility but reports actual failures on first and final fallback', async () => {
+  ['Web diagnostic keeps null compatibility and safely reports failures without automatic fallback', async () => {
     for (const [failure, expected] of [
       [Object.assign(new Error('secret URL'), { response: { status: 404 } }), 'HTTP_404'],
       [Object.assign(new Error('secret URL'), { code: 'ETIMEDOUT' }), 'TIMEOUT'],
@@ -93,49 +93,39 @@ const checks = [
       ['', 'MISSING_MODEL'],
     ]) {
       const f = load('hongguo.js', {
-        axios: { get: async () => { if (typeof failure !== 'string') throw failure; return { data: failure }; },
-          post: async () => ({ status: 200, headers: {}, data: Buffer.alloc(0) }) },
+        axios: { get: async () => { if (typeof failure !== 'string') throw failure; return { data: failure }; } },
         './app-source': { fetchAppPlayUrl: async () => { throw new Error('unavailable'); } },
       });
-      assert.equal(await f.fetchPlayUrlFromWeb('11', '1'), null);
-      for (const skipWeb of [false, true]) {
-        if (skipWeb) f.markWebMediaFailure({ source: 'web', vid: '11' });
-        const result = await f.fetchPlayUrlSingle('11', '1', { force: true });
-        assert.equal(result.sources.find(item => item.source === 'web').code, expected);
-        assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
-      }
+      let reported;
+      assert.equal(await f.fetchPlayUrlFromWeb('11', '1', error => { reported = error; }), null);
+      assert.ok(reported);
+      const result = await f.fetchPlayUrlSingle('11', '1', { force: true });
+      assert.deepEqual(Array.from(result.sources, item => item.source), ['app']);
+      assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
+      // Diagnostic web errors still preserve useful categories for an explicit caller.
+      const code = reported.code || (reported.response?.status ? 'HTTP_' + reported.response.status : 'MISSING_MODEL');
+      assert.equal(['SECURITY_BLOCKED', 'ERR_WEB_MEDIA_ADDRESS'].includes(code) ? 'SECURITY_BLOCKED' : code === 'ETIMEDOUT' ? 'TIMEOUT' : code, expected);
     }
   }],
-  ['Playback route budgets reach App after Web timeout and bound legacy API to one attempt', async () => {
-    const webTimeouts = [], apiTimeouts = [];
-    let appAvailable = true, webAvailable = false;
+  ['Default playback has no Web/legacy lookup delay and requests App highest quality', async () => {
+    const calls = [];
+    let available = true;
     const f = load('hongguo.js', {
-      axios: {
-        get: async (_url, options) => {
-          webTimeouts.push(options.timeout);
-          if (webAvailable) return { data: webPage() };
-          throw Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
-        },
-        post: async (_url, _body, options) => {
-          apiTimeouts.push(options.timeout);
-          throw Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
-        },
-      },
-      './app-source': { fetchAppPlayUrl: async () => {
-        if (!appAvailable) throw new Error('App 片源请求超时');
+      axios: { get: async () => { calls.push('web'); return { data: webPage() }; },
+        post: async () => { calls.push('api'); throw new Error('must not request legacy playback'); } },
+      './app-source': { fetchAppPlayUrl: async (_vid, options) => {
+        calls.push({ quality: options.quality, preferQuality: options.preferQuality });
+        if (!available) throw new Error('App 片源请求超时');
         return { url: media('app'), source: 'app' };
       } },
     });
     assert.equal((await f.fetchPlayUrlSingle('11', '1')).source, 'app');
-    assert.deepEqual(webTimeouts, [4000, 4000], 'Web cannot consume the whole lookup deadline');
-    assert.deepEqual(apiTimeouts, []);
-    appAvailable = false; webTimeouts.length = 0;
+    assert.deepEqual(calls, [{ quality: 'auto', preferQuality: true }]);
+    available = false; calls.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { force: true })).code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(webTimeouts, [4000, 4000]);
-    assert.deepEqual(apiTimeouts, [6000], 'legacy playback lookup must not repeat after timeout');
-    webAvailable = true; webTimeouts.length = 0;
+    assert.deepEqual(calls, [{ quality: 'auto', preferQuality: true }]);
     assert.equal((await f.fetchEpisodeListFromWeb('1')).series_id, '1');
-    assert.deepEqual(webTimeouts, [30000], 'non-playback web defaults must stay unchanged');
+    assert.equal(calls.at(-1), 'web', 'catalog metadata remains separate from playback routing');
   }],
   ['Web rejects wrong or missing current episode identity even when vid_list contains the request', async () => {
     for (const data of [
@@ -187,21 +177,20 @@ const checks = [
     assert.deepEqual(Array.from(result.variants, v => v.url), ['high', 'high2'].map(media));
     assert.ok(result.variants.every(v => v.width === 1080 && v.quality === '1080p'));
   }],
-  ['Recent web failure prefers App but allows fresh web as final recovery', async () => {
-    const f = routeFixture(), first = await f.fetchPlayUrlSingle('11', '1');
-    f.markWebMediaFailure(first); f.state.calls.length = 0;
-    const recovered = await f.fetchPlayUrlSingle('11', '1', { force: true });
-    assert.equal(recovered.source, 'web', 'five-minute penalty must not hide the only working source');
-    assert.deepEqual(f.state.calls, ['app', 'api', 'web']);
+  ['App unavailable never falls back to an otherwise working website; retry can recover', async () => {
+    const f = routeFixture();
+    const failed = await f.fetchPlayUrlSingle('11', '1');
+    assert.equal(failed.url, null); assert.equal(failed.code, 'SOURCE_UNAVAILABLE');
+    assert.deepEqual(f.state.calls, ['app']);
     f.state.app = true; f.state.calls.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1')).source, 'app');
-    assert.deepEqual(f.state.calls, ['app'], 'web penalty remains after last-resort recovery');
+    assert.deepEqual(f.state.calls, ['app']);
   }],
   ['Unavailable source reports safe per-route reasons without declaring web metadata a global block', async () => {
     const f = routeFixture(); f.state.web = false;
     const unavailable = await f.fetchPlayUrlSingle('11', '1');
     assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['web', 'app', 'api']);
+    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['app']);
     assert.doesNotMatch(JSON.stringify(unavailable), /secret|signed\.invalid|private|前.*集|付费|会员/);
     assert.ok(unavailable.sources.every(item => item.code && item.message));
     f.state.app = true;

@@ -1147,7 +1147,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             <select className="input-field" value={downloadQuality} disabled={qualityLoading}
               aria-describedby="player-download-quality-hint"
               onChange={(event) => changeQuality(event.target.value)}>
-              <option value="auto">自动（高清优先）</option>
+              <option value="auto">自动（App 最高画质）</option>
               <option value="1080p">1080P</option>
               <option value="720p">720P</option>
             </select>
@@ -1545,7 +1545,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       )}
 
       {detail?.web_accessible_episodes != null && detail.web_accessible_episodes < detail.total && (
-        <p className="player-tips">网页源提供前 {detail.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</p>
+        <p className="player-tips">默认使用 App 高清源播放全部目录中的分集，具体可播情况以 App 接口返回为准。</p>
       )}
 
       {episodes.some((ep) => ep.locked) && <p className="player-tips">锁定集需在来源平台解锁，本应用不提供解锁；连播会跳过锁定集。</p>}

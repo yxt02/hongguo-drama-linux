@@ -245,11 +245,11 @@ function SettingsPage({ active = true, preview = false }) {
           <select id="default-download-quality" className="input-field select-field"
             value={settings.download_quality || 'auto'} aria-describedby="default-download-quality-hint"
             onChange={(event) => update('download_quality', event.target.value)}>
-            <option value="auto">自动（高清优先）</option>
+            <option value="auto">自动（App 最高画质）</option>
             <option value="1080p">1080P</option>
             <option value="720p">720P</option>
           </select>
-          <p className="settings-hint" id="default-download-quality-hint">保存后用于在线播放、自动缓存和新建下载。指定清晰度不可用时提示，不自动降级；手动下载的已有文件继续保留。</p>
+          <p className="settings-hint" id="default-download-quality-hint">红果默认使用 App 源，自动模式选择最高可用画质，用于在线播放、自动缓存和新建下载。App 取源失败时可重试，不自动切到网页源；指定清晰度不可用时提示。已有手动下载保留。</p>
         </div>
 
         <div className="settings-group">

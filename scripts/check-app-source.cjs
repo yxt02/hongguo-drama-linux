@@ -74,13 +74,11 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
 function nativeFixture() {
   const pending = [];
   const context = { module: { exports: {} }, Buffer, URL, process: { env: {} },
-    require: name => name === 'axios' ? { get: () => new Promise(resolve => pending.push(resolve)) } : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
+    require: name => name === './app-source' ? { fetchAppPlayUrl: () => new Promise(resolve => pending.push(resolve)) } : name === 'axios' ? {} : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
   };
   vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'hongguo.js'), 'utf8') + '\nmodule.exports.parseModelVideo = parseModelVideo;', context);
   return { ...context.module.exports, pending,
-    finish(index, name) { pending[index]({ data: `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-      'player_(series_id)/(vid)/page': { vid: '11', series_id: '1', seriesDetail: { series_id: '1' }, publicVideoSeo: { available: true, itemId: '11', seriesId: '1' } },
-    } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: `https://media.example/${name}.mp4` })}</script>` }); },
+    finish(index, name) { pending[index]({ source: 'app', url: `https://media.example/${name}.mp4` }); },
   };
 }
 const mediaUrl = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
@@ -103,10 +101,10 @@ const checks = [
     }
     assert.equal(f.calls.length, 10, 'each lookup retains its two-stage flow');
   }],
-  ['App H264 takes priority over higher-resolution HEVC', async () => {
-    const result = await appRows({ hd: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '1080P' },
-      sd: { main_url: mediaUrl('avc'), codec_type: 'h264', quality_desc: '720P' } });
-    assert.equal(result.url, mediaUrl('avc'));
+  ['App default chooses measured higher resolution before codec compatibility', async () => {
+    const result = await appRows({ hd: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '1080P', width: 1080, height: 1920 },
+      sd: { main_url: mediaUrl('avc'), codec_type: 'h264', quality_desc: '720P', width: 720, height: 1280 } });
+    assert.equal(result.url, mediaUrl('hevc'));
   }],
   ['App invalid or missing main URL keeps validated same-stream backup', async () => {
     for (const main_url of ['', 'https://127.0.0.1/private', 'https://v3-reading.qznovelvod.com.attacker.test/video', 'http://v3-reading.qznovelvod.com/video']) {

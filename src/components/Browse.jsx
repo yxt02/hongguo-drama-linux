@@ -532,7 +532,7 @@ function Browse({ onNavigate, active = true }) {
                         {mediaSourceLabel(detail.series_id, mediaSources)} · 共 {detail.total} 集 · 已下载 <b>{detail.completedCount}</b> 集
                       </div>
                       {detail.web_accessible_episodes != null && detail.web_accessible_episodes < detail.total && (
-                        <div className="browse-drawer-sub">网页源提供前 {detail.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</div>
+                        <div className="browse-drawer-sub">默认使用 App 高清源，完整目录均可尝试取源，具体可播情况以 App 接口返回为准。</div>
                       )}
                       {detail.episodes.some((ep) => ep.locked) && <div className="browse-drawer-sub">标记“锁定”的集数需在来源平台解锁，本应用不提供解锁。</div>}
                       <div className="browse-drawer-sub">选中 {selectedIdx.size} 集待下载</div>

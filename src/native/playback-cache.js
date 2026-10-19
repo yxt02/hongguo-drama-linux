@@ -15,7 +15,7 @@ function windowEntries({ seriesId, vidIndex, episodes, quality = 'auto' } = {}) 
 }
 function manifest(entry) {
   return { version: 1, vid: entry.vid, seriesId: entry.seriesId, vidIndex: entry.vidIndex, quality: entry.quality,
-    source: entry.source, codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, size: entry.size, fileMtime: entry.fileMtime, lastUsed: entry.lastUsed };
+    source: entry.source, mediaSource: entry.mediaSource, codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, size: entry.size, fileMtime: entry.fileMtime, lastUsed: entry.lastUsed };
 }
 function save(entry) {
   fs.writeFileSync(path.join(entry.disk.directory, 'metadata.json'), JSON.stringify(manifest(entry)), { mode: 0o600 });
@@ -34,6 +34,9 @@ function restore(root) {
       if (e.version !== 1 || typeof e.vid !== 'string' || !e.vid || typeof e.seriesId !== 'string'
         || !Number.isInteger(e.vidIndex) || e.vidIndex < 1 || !['auto', '1080p', '720p'].includes(e.quality)
         || !Number.isFinite(e.size) || e.size <= 0 || fs.statSync(filePath).size !== e.size) throw new Error('Incomplete cache');
+      // Old automatic Hongguo files may contain silently selected web/legacy media.
+      // Manual originals live elsewhere; only their managed copies may be rebuilt.
+      if (e.source === 'hongguo' && !['app', 'manual'].includes(e.mediaSource)) throw new Error('Outdated source policy');
       entries.push({ ...e, filePath, complete: true, disk: { directory, readers: 0, managed: true } });
     } catch (_) { fs.rmSync(directory, { recursive: true, force: true }); }
   }

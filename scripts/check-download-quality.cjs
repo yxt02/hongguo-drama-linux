@@ -43,8 +43,9 @@ const checks = [
     assert.equal(result.url, mediaUrl('high')); assert.equal(result.width, 1080);
     const route = routeFixture(); await route.fetchPlayUrlSingle('11', '1', { preferQuality: true });
     assert.equal(route.calls.includes('web'), false, 'playback tries the App high-quality source first');
-    const fallback = routeFixture(true); const web = await fallback.fetchPlayUrlSingle('11', '1', { preferQuality: true });
-    assert.equal(web.source, 'web', 'auto can recover through the web when App source is unavailable');
+    const fallback = routeFixture(true); const unavailable = await fallback.fetchPlayUrlSingle('11', '1', { preferQuality: true });
+    assert.equal(unavailable.url, null); assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
+    assert.deepEqual(fallback.calls, ['auto'], 'App failure must never request web media');
   }],
   ['1080 rejects a fake label with only 720 pixels', async () => {
     await assert.rejects(appFixture({ fake: stream('fake', 720, 1280) }).fetchAppPlayUrl('11', { quality: '1080p' }), /1080p/);
@@ -65,11 +66,11 @@ const checks = [
       await assert.rejects(appFixture(rows).fetchAppPlayUrl('11', { quality: '1080p' }), /1080p/);
     }
   }],
-  ['auto preserves H264 priority and accepts legacy missing dimensions', async () => {
+  ['auto defaults to highest measured resolution even with legacy missing dimensions', async () => {
     const rows = { high: stream('high', 1080, 1920, 'hevc'), low: { main_url: mediaUrl('low'), codec_type: 'h264', quality_desc: '720P' } };
     for (const options of [undefined, { quality: 'auto' }]) {
       const result = await appFixture(rows).fetchAppPlayUrl('11', options);
-      assert.equal(result.url, mediaUrl('low')); assert.equal(result.quality, '720P');
+      assert.equal(result.url, mediaUrl('high')); assert.equal(result.width, 1080);
     }
   }],
   ['unknown quality is rejected before network or third-party dispatch', async () => {
@@ -87,13 +88,13 @@ const checks = [
     const auto = await f.fetchPlayUrlSingle('11', '1');
     const hd = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' });
     const sd = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
-    assert.equal(auto.url, mediaUrl('web')); assert.equal(hd.quality, '1080p'); assert.equal(sd.quality, '720p');
+    assert.equal(auto.quality, 'auto'); assert.equal(hd.quality, '1080p'); assert.equal(sd.quality, '720p');
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' })).url, hd.url);
     const fresh = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p', force: true });
     assert.notEqual(fresh.url, hd.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: 'auto' })).url, auto.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: '720p' })).url, sd.url);
-    assert.deepEqual(f.calls, ['web', '1080p', '720p', '1080p']);
+    assert.deepEqual(f.calls, ['auto', '1080p', '720p', '1080p']);
   }],
   ['explicit App failure returns no URL and never silently falls back to web', async () => {
     const f = routeFixture(true);

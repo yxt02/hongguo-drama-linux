@@ -57,49 +57,50 @@ const checks = [
     assert.equal(state.post, 0, '有效网页不应等待 API');
     assert.equal(state.get, 1, '相同分集只取一次');
   }],
-  ['播放地址网页优先、并发合并、短期复用', async () => {
-    const { native, state } = fixture();
+  ['播放地址 App 优先、并发合并、短期复用', async () => {
+    const { native, state } = fixture({app:true});
     const results = await Promise.all([native.fetchPlayUrlSingle('11', '1'), native.fetchPlayUrlSingle('11', '1')]);
-    assert.equal(results[0].source, 'web');
+    assert.equal(results[0].source, 'app');
     await native.fetchPlayUrlSingle('11', '1');
     assert.equal(state.post, 0, '有效网页不应等待 API');
-    assert.equal(state.get, 1, '相同播放地址只取一次');
+    assert.equal(state.get, 0, '播放不访问网页');
+    assert.equal(state.appCalls, 1, '相同播放地址只取一次');
   }],
   ['分集 60 秒、播放地址 30 秒到期刷新', async () => {
-    const { native, state, advance } = fixture();
+    const { native, state, advance } = fixture({app:true});
     await native.fetchEpisodeList('1');
     await native.fetchPlayUrlSingle('11', '1');
     advance(29999);
     await native.fetchEpisodeList('1');
     await native.fetchPlayUrlSingle('11', '1');
-    assert.equal(state.get, 2, '未到期不重复访问');
+    assert.equal(state.get, 1); assert.equal(state.appCalls, 1, '未到期不重复访问');
     advance(2);
     await native.fetchPlayUrlSingle('11', '1');
-    assert.equal(state.get, 3, '播放地址到期后刷新');
+    assert.equal(state.get, 1); assert.equal(state.appCalls, 2, '播放地址到期后刷新');
     advance(30000);
     await native.fetchEpisodeList('1');
-    assert.equal(state.get, 4, '分集到期后刷新');
+    assert.equal(state.get, 2, '分集到期后刷新');
   }],
   ['空响应不退避重试，失败不缓存', async () => {
     const { native, state } = fixture({ web: false });
     await assert.rejects(native.fetchEpisodeList('1'));
     assert.equal((await native.fetchPlayUrlSingle('11', '1')).url, null);
-    assert.equal(state.post, 2, '每个失败链路只访问一次空响应 API');
+    assert.equal(state.post, 1, '仅目录回退访问旧 API');
     assert.equal(state.waits, 0, '空响应不进入重试等待');
-    state.web = true;
+    state.web = true; state.app = true;
     assert.equal((await native.fetchEpisodeList('1')).total, 2);
-    assert.equal((await native.fetchPlayUrlSingle('11', '1')).source, 'web');
+    assert.equal((await native.fetchPlayUrlSingle('11', '1')).source, 'app');
   }],
-  ['网页失败仍可回退分集 API 和加密播放源', async () => {
-    const { native, state } = fixture({ web: false, api: true });
+  ['网页失败仍可回退分集 API，播放保持 App 源', async () => {
+    const { native, state } = fixture({ web: false, api: true, app: true });
     assert.equal((await native.fetchEpisodeList('1')).total, 1);
     const play = await native.fetchPlayUrlSingle('11', '1');
-    assert.equal(play.source, 'api');
-    assert.equal(play.spadeA, 'test-key');
+    assert.equal(play.source, 'app');
+    assert.equal(play.contentKey.length, 32);
     assert.ok(state.get > 0, '优先尝试网页源');
-    assert.equal(state.post, 2);
+    assert.equal(state.post, 1);
   }],
-  ['网页可用范围与后续集数错误，仍保留 API 回退', async () => {
+  ['网页可用范围不截断目录，App 可播放后续分集', async () => {
     const { native, state } = fixture({
       html: page.replace('"vid_list"', '"accessible_episode_cnt":1,"vid_list"'),
       blockedVids: ['11', '12'],
@@ -113,10 +114,10 @@ const checks = [
     assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
     assert.doesNotMatch(unavailable.error, /前 1 集.*第 2 集/);
     assert.doesNotMatch(unavailable.error, /付费|会员/);
-    state.api = true;
+    state.app = true;
     const restored = await native.fetchPlayUrlSingle('12', '1');
-    assert.equal(restored.source, 'api');
-    assert.equal(restored.spadeA, 'test-key');
+    assert.equal(restored.source, 'app');
+    assert.equal(restored.contentKey.length, 32);
   }],
 ];
 

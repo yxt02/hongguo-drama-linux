@@ -260,7 +260,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
             .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
         return { item, codec, codecRank, quality, pixels, width, height };
     }).filter(row => row.codecRank < 2 && meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
-        ? (options.preferQuality
+        ? (options.preferQuality !== false
             ? Math.min(b.width, b.height) - Math.min(a.width, a.height) || b.width * b.height - a.width * a.height || a.codecRank - b.codecRank
             : a.codecRank - b.codecRank || b.pixels - a.pixels)
         : Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.codecRank - b.codecRank);

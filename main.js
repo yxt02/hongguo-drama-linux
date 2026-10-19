@@ -2245,7 +2245,7 @@ async function probePlaybackFile(file, quality, task) {
 async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress) {
   const directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(vid, quality)));
   const entry = { vid: String(vid), seriesId: String(seriesId), quality, filePath: path.join(directory, 'video.mp4'),
-    disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo', codec: playInfo.codec || '' };
+    disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo', mediaSource: playInfo.source, codec: playInfo.codec || '' };
   const input = path.join(directory, 'input.part');
   try {
     if (playInfo.format === 'hls') await prepareHlsFile(playInfo, entry.filePath, { signal, onProgress });
@@ -2296,7 +2296,7 @@ async function prepareManualPlayback(original, descriptor, signal) {
     const stat = await fsp.stat(filePath);
     if (stat.size > playbackCache.MAX_EPISODE_BYTES) throw new Error('单集超过自动缓存限制');
     return { ...descriptor, ...info, ...verified, filePath, size: stat.size, fileMtime: stat.mtimeMs,
-      complete: true, validated: true, lastUsed: Date.now(), disk: { directory, readers: 0, managed: true },
+      complete: true, validated: true, mediaSource: 'manual', lastUsed: Date.now(), disk: { directory, readers: 0, managed: true },
       source: /^custom:[^:]+/.exec(descriptor.vid)?.[0] || /^(xifan|hema):/.exec(descriptor.vid)?.[1] || 'hongguo' };
   } catch (_) { if (directory) await fsp.rm(directory, { recursive: true, force: true }); return null; }
 }
@@ -2474,7 +2474,7 @@ function compatIdentity(payload) {
     const stat = fs.statSync(original);
     file = [path.resolve(original), stat.size, stat.mtimeMs];
   }
-  return JSON.stringify([String(payload.vid || ''), normalizeDownloadQuality(payload.quality), file]);
+  return JSON.stringify([String(payload.vid || ''), normalizeDownloadQuality(payload.quality), file, /^(xifan|hema|custom):/.test(String(payload.vid)) ? null : 'app-hd-v1']);
 }
 
 function compatCacheStatus() {

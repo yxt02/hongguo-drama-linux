@@ -10,9 +10,8 @@ const API = "https://api5-normal-sinfonlineb.fqnovel.com";
 const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
-// ===== 优先使用官网网页版，App 接口保留为回退 =====
-// 官网 player 页是服务端渲染的：完整分集 vid 列表与可直接下载的 MP4 直链
-// 都内嵌在 HTML 里，无需任何签名。走的是官网对普通用户开放的同一层。
+// 官网提供搜索和完整分集 ID；播放与下载默认使用 App 最高可用画质。
+// 网页可播集数仅是元数据，不限制 App 逐集取源。
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
@@ -72,17 +71,6 @@ const DETAIL_BIZ_PARAM = {
   use_server_dns: false,
 };
 
-const MODEL_BIZ_PARAM = {
-  detail_page_version: 0,
-  device_level: 3,
-  disable_digg_stat: false,
-  need_all_video_definition: true,
-  need_mp4_align: false,
-  use_os_player: false,
-  use_server_dns: false,
-  video_platform: 1024,
-};
-
 /**
  * API 调用封装
  */
@@ -137,15 +125,6 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000) {
 
 const responseCache = new Map();
 const pendingRequests = new Map();
-const failedWebMedia = new Map();
-
-/** A real media GET failed; keep retries off that episode's web CDN briefly. */
-function markWebMediaFailure(playInfo) {
-  if (playInfo?.source !== 'web' || !playInfo.vid) return;
-  failedWebMedia.set(String(playInfo.vid), Date.now() + 5 * 60 * 1000);
-  if (failedWebMedia.size > 128) failedWebMedia.delete(failedWebMedia.keys().next().value);
-}
-
 /** 仅保留短期成功结果；重复点击共享请求，失败后立即允许重试。 */
 async function cachedRequest(key, ttl, load, { force = false } = {}) {
   const cached = responseCache.get(key);
@@ -507,16 +486,14 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('custom:') || String(sid).startsWith('custom:')) return require('./custom-source').fetchPlayUrlSingle(vid, sid, options);
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
-    const skipWeb = (failedWebMedia.get(String(vid)) || 0) > Date.now();
-    const cacheKey = `play:${sid || ''}:${vid}${quality === 'auto' ? '' : `:${quality}`}${options.preferQuality ? ':hq' : ''}${skipWeb ? ':fallback' : ''}`;
-    const result = await cachedRequest(cacheKey, 30000, () => quality === 'auto'
-      ? fetchPlayUrlFresh(vid, sid, skipWeb, options.preferQuality)
-      : require('./app-source').fetchAppPlayUrl(String(vid), { quality }).catch(error => {
+    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
+    return await cachedRequest(cacheKey, 30000, async () => {
+      try {
+        return await require('./app-source').fetchAppPlayUrl(String(vid), { quality, preferQuality: true });
+      } catch (error) {
         throw unavailableSources([sourceFailure('app', error)], quality);
-      }), options);
-    // Last-resort web recovery must not replace App priority during the penalty window.
-    if (skipWeb && result.source === 'web' && responseCache.get(cacheKey)?.value === result) responseCache.delete(cacheKey);
-    return result;
+      }
+    }, options);
   } catch (error) {
     return { url: null, spadeA: null, codec: null, error: error.message,
       ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code, sources: error.sources } : {}) };
@@ -543,42 +520,6 @@ function unavailableSources(sources, quality = 'auto') {
   error.code = 'SOURCE_UNAVAILABLE';
   error.sources = sources;
   return error;
-}
-
-async function fetchPlayUrlFresh(vid, sid, skipWeb = false, preferQuality = false) {
-  const sources = [];
-  if (preferQuality) {
-    try { return await require('./app-source').fetchAppPlayUrl(String(vid), { preferQuality: true }); }
-    catch (error) { sources.push(sourceFailure('app', error)); }
-  }
-  const web = !skipWeb && await fetchPlayUrlFromWeb(vid, sid, error => sources.push(sourceFailure('web', error)));
-  if (web && web.url) return web;
-
-  if (!preferQuality) {
-    try { return await require('./app-source').fetchAppPlayUrl(String(vid)); }
-    catch (error) { sources.push(sourceFailure('app', error)); }
-  }
-
-  const body = {
-    biz_param: MODEL_BIZ_PARAM,
-    dr_scene: "preload",
-    mixed_video_id_map: { "1004": [vid] },
-  };
-  try {
-    const j = await apiCall("/novel/player/multi_video_model/preload/v1", body, 1, 6000);
-    const item = j?.data?.[vid] || {};
-    const [url, spadeA, codec] = parseModelVideo(item.video_model);
-    if (url) return { url, spadeA, codec, source: 'api', vid: String(vid), userAgent: UA, referer: VIDEO_REFERER };
-    sources.push(sourceFailure('api'));
-  } catch (e) {
-    sources.push(sourceFailure('api', e));
-  }
-  // A transient CDN failure changes priority, not permanent source availability.
-  if (skipWeb) {
-    const lastWeb = await fetchPlayUrlFromWeb(vid, sid, error => sources.push(sourceFailure('web', error)));
-    if (lastWeb?.url) return lastWeb;
-  }
-  throw unavailableSources(sources);
 }
 
 /**
@@ -1007,5 +948,4 @@ module.exports = {
   UA,
   WEB_UA,
   WEB_REFERER,
-  markWebMediaFailure,
 };
