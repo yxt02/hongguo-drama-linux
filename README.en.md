@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="build/icon.png" alt="Hongguo Short Drama desktop icon" width="112" height="112">
+  <img src="docs/images/app-icon-1.74.6.png" alt="Hongguo Short Drama Linux app icon" width="144" height="144">
 </p>
 
-<h1 align="center">Hongguo Short Drama · Desktop</h1>
+<h1 align="center">Hongguo Short Drama · Linux Desktop</h1>
 
 <p align="center">
   <strong>English</strong> · <a href="README.md">中文</a>
 </p>
 
-<p align="center">Find a good drama and pick up where you left off. Search, play, download, follow series and merge exports — all in one desktop app.</p>
+<p align="center">App HD sources by default, automatic episode caching, remembered series compatibility decoding, a system tray and one-click updates.</p>
 
 <p align="center">
   <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
   <img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-555555?style=flat-square">
-  <img alt="macOS 13+ / Windows x64" src="https://img.shields.io/badge/platforms-Linux__x64__%2F__macOS__13%2B__%2F__Windows__x64-55746b?style=flat-square">
+  <img alt="Updates without uninstalling" src="https://img.shields.io/badge/updates-no_uninstall-55746b?style=flat-square">
   <a href="LICENSE"><img alt="GPL-3.0 license" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
 </p>
 
@@ -38,6 +38,13 @@
 ---
 
 ## Linux Quick Start
+
+### Current highlights · 1.74.6
+
+- **Matching new icon:** the README, launcher, window, tray and sidebar use the same artwork with transparent outer corners and no white border.
+- **App HD by default:** automatic mode selects the highest available measured resolution. Failures offer retry rather than falling back to low-resolution web streams; actual quality and availability depend on the source.
+- **Remembered series decoding:** successful repair enables compatibility playback for subsequent episodes, with serial preconversion inside the ±5-episode window and an option to restore automatic decoding.
+- **Updates and tray:** upgrade and restart in place without uninstalling, and choose whether X quits or minimizes to the tray.
 
 **No Node.js, no system FFmpeg, no flags required.**
 
@@ -280,17 +287,13 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.74.3** (`1.74.3` in source); upstream Mac/Windows builds remain at
-1.73. Package and verification records live
+The current Linux release is **1.74.6** (`1.74.6` in source). macOS and Windows releases are maintained upstream. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
-**Linux verification** — the bundled 57-check suite passes on Ubuntu 24.04 x86-64 with the bundled
-FFmpeg, covering storage atomicity, window layout, stealth window, single-instance, download queue
-and retry, quality selection, HLS remux, merge and cancellation, playback controls / speed /
-resume / shortcuts, decode-failure auto-repair (black screen with sound → H.264), all three
-sources, source recovery and routing, danmaku, watch history, web media guarding and share-link
-security. The packaged bundle was smoke-tested end to end: extract →
-`./红果短剧.sh` (no flags) → live catalogue loads and search returns real results.
+**Linux verification** — all 41 core offline regression scripts pass, including series decoding
+memory, source selection, cache windows, playback recovery, cancellation, tray lifecycle and update checks.
+The full Linux archive passed the in-place upgrade check. Native desktop tests verified the packaged
+icon can load into the tray and that both close-to-tray and complete quit work correctly.
 
 **Not covered** — physical Windows 11, all GPUs, physical Intel Macs, clean Gatekeeper environments,
 real-network danmaku on Windows and long-duration playback. Cloud checks and notarisation do not
@@ -301,7 +304,10 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
-| **1.74.3 (Linux)** | Fix App video CDN 403 caused by browser Referer; live 1080p download/decode verified |
+| **1.74.6 (Linux)** | New transparent app icon shared by launcher, window, tray, sidebar and README |
+| 1.74.5 (Linux) | Remember series compatibility decoding and preconvert nearby episodes |
+| 1.74.4 (Linux) | Default to App highest quality without web fallback; migrate old web caches |
+| 1.74.3 (Linux) | Fix App video CDN 403 caused by browser Referer; live 1080p download/decode verified |
 | 1.74.2 (Linux) | Tray menu, configurable X button, complete quit and hidden-search-window cleanup |
 | 1.74.1 (Linux) | One-click verified update and restart, previous-version backup and rollback, no uninstall |
 | 1.74.0 (Linux) | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |

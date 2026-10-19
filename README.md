@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="build/icon.png" alt="红果短剧桌面版图标" width="112" height="112">
+  <img src="docs/images/app-icon-1.74.6.png" alt="红果短剧 Linux 新版应用图标" width="144" height="144">
 </p>
 
-<h1 align="center">红果短剧 · 桌面版</h1>
+<h1 align="center">红果短剧 · Linux 桌面版</h1>
 
 <p align="center">
   <strong>中文</strong> · <a href="README.en.md">English</a>
 </p>
 
-<p align="center">发现好剧，接着上次看。搜索、播放、下载、追剧与合并导出，在一个桌面应用里完成。</p>
+<p align="center">App 高清源优先，接着上次看。支持自动缓存、整剧兼容解码、托盘运行与一键更新。</p>
 
 <p align="center">
-  <a href="https://github.com/jackotom/hongguo-drama/releases/latest"><img alt="最新公开版本" src="https://img.shields.io/github/v/release/jackotom/hongguo-drama?style=flat-square"></a>
-  <img alt="macOS 13 或更新版本" src="https://img.shields.io/badge/macOS-13%2B-555555?style=flat-square">
-  <img alt="M 系列 Mac、Intel Mac 与 Windows x64" src="https://img.shields.io/badge/platforms-Mac_arm64_%2F_x64_%C2%B7_Windows_x64-55746b?style=flat-square">
+  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="Linux 最新版本" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
+  <img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-555555?style=flat-square">
+  <img alt="一键更新，无需卸载" src="https://img.shields.io/badge/更新-无需卸载-55746b?style=flat-square">
   <a href="LICENSE"><img alt="GPL-3.0 许可证" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
 </p>
 
@@ -22,12 +22,19 @@
   <a href="#完整功能">完整功能</a> ·
   <a href="#界面与演示">界面与演示</a> ·
   <a href="#常见问题">常见问题</a> ·
-  <a href="https://github.com/jackotom/hongguo-drama/issues">反馈问题</a>
+  <a href="https://github.com/yxt02/hongguo-drama-linux/issues">反馈问题</a>
 </p>
 
 ## Linux 快速开始
 
-> **本仓库是 Linux 移植版。** 上游只提供 macOS 与 Windows；本仓库补上了 Linux 打包、Chromium 沙箱适配与 FFmpeg 装配。功能完全一致。
+> **本仓库维护 Linux 版。** 基于 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 开发，提供 Linux 打包、App 高清取源、解码恢复、缓存管理与一键更新。macOS / Windows 构建由上游提供。
+
+### 当前版本重点 · 1.74.6
+
+- **统一新版图标**：README、桌面启动器、窗口、托盘和侧栏使用同一图案，外围白边已处理为透明圆角。
+- **默认 App 最高可用画质**：按真实视频尺寸选流；取源失败可重试，不自动切回网页低清源。具体清晰度和可播范围以来源返回为准。
+- **整剧兼容解码**：首次修复成功后记住本剧的解码方式，后续集数直接沿用；前后各五集范围内串行预转码，可恢复自动判断。
+- **原位升级与托盘**：设置中一键更新并重启，无需卸载；可配置点 X 退出或最小化到托盘。
 
 **不需要 Node.js、不需要系统 FFmpeg、不需要任何启动参数。**
 
@@ -84,7 +91,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.74.6**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.74.6**（Linux fork；macOS / Windows 请查看上游版本）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 | 安装方式 |
 |---|---|---|
@@ -93,7 +100,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 | Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/Hongguo-1.73-mac-x64.dmg)（上游） | 打开 DMG，拖入「应用程序」后启动 |
 | Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/hongguo-downloader-1.73.0-win-x64.zip)（上游） | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
 
-[本仓库 Linux 发行页](https://github.com/yxt02/hongguo-drama-linux/releases) · [上游正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.73 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.73) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/SHA256SUMS.txt)
+[本仓库 Linux 发行页](https://github.com/yxt02/hongguo-drama-linux/releases) · [上游正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.73 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.73) · [Linux SHA256 校验文件](https://github.com/yxt02/hongguo-drama-linux/releases/latest/download/SHA256SUMS.txt)
 
 - **更新旧版**：Linux 1.74.1 起提供设置页一键更新及 `hongguo --update --restart`。首次可运行 `升级现有安装.sh` 直接升级；下载和安装均由用户主动触发。
 - **Mac**：1.73 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
@@ -339,13 +346,15 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ### 如何反馈问题？
 
-到 [Issues](https://github.com/jackotom/hongguo-drama/issues) 提供应用版本、操作系统与芯片类型、来源、复现步骤和错误提示。截图与日志请移除账号信息、Cookie、代理凭据及个人文件路径。
+到 [Issues](https://github.com/yxt02/hongguo-drama-linux/issues) 提供应用版本、操作系统与芯片类型、来源、复现步骤和错误提示。截图与日志请移除账号信息、Cookie、代理凭据及个人文件路径。
 
 ## 版本与验证范围
 
-上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.6**（源码配置版本 `1.74.6`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+本仓库 Linux 版为 **1.74.6**（源码配置版本 `1.74.6`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
-1.73 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
+**Linux 本版验证**：41/41 个核心回归脚本、完整安装包原位升级验证，以及真实桌面下的托盘加载与关闭行为检查通过。
+
+**上游 1.73 的历史验证记录**：两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
 
 **尚未覆盖**：实体 Windows 11、全部显卡、实体 Intel Mac、启用 Gatekeeper 的干净环境、Windows 真实网络弹幕及长期播放。云端检查和公证不能代替所有设备与网络环境的实测。
 
