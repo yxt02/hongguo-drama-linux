@@ -196,3 +196,28 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
     },
   };
 }
+
+// Device-local series policy. Only successful decode repair should enable it;
+// network failures and ordinary dark scenes must never learn this preference.
+export const SERIES_COMPAT_KEY = 'hongguo:series-compat:v1';
+function readCompatSeries(storage) {
+  try {
+    storage = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+    const raw = storage?.getItem(SERIES_COMPAT_KEY);
+    if (!raw || raw.length > 65536) return [];
+    const rows = JSON.parse(raw);
+    return Array.isArray(rows) ? [...new Set(rows.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 256))].slice(-200) : [];
+  } catch (_) { return []; }
+}
+export function seriesNeedsCompat(seriesId, storage) {
+  return !!seriesId && readCompatSeries(storage).includes(String(seriesId));
+}
+export function rememberSeriesCompat(seriesId, enabled = true, storage) {
+  if (!seriesId || String(seriesId).length > 256) return;
+  try {
+    storage = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+    const rows = readCompatSeries(storage).filter(id => id !== String(seriesId));
+    if (enabled) rows.push(String(seriesId));
+    storage?.setItem(SERIES_COMPAT_KEY, JSON.stringify(rows.slice(-200)));
+  } catch (_) { /* The current session still remembers the mode if storage is unavailable. */ }
+}

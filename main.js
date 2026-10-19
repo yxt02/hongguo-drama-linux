@@ -2605,7 +2605,7 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
     job.promise = Promise.resolve().then(async () => {
       if (previous) await previous.promise;
       if (clearing) await clearing;
-      if (job.cancelled) return compatCancelled();
+      if (job.cancelled || (payload.background && !withinPlaybackWindow(job))) return compatCancelled();
       return transcodeForPlayback(payload, job);
     }).catch(error => ({ success: false, error: error.message })).finally(() => {
       if (compatPreparing.get(key) === job) compatPreparing.delete(key);

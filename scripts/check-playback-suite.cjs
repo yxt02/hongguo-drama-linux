@@ -7,6 +7,7 @@ const checks = [
   "check-next-cache.cjs",
   "check-decode-watch.cjs",
   "check-decode-fallback.cjs",
+  "check-series-decode.cjs",
   "check-compat-lifecycle.cjs",
   "check-player-resume.cjs",
   "check-player-fallback.cjs",

@@ -12,9 +12,9 @@ const shortcutSource = transformSync(fs.readFileSync(path.join(__dirname, '../sr
 const decodeWatchSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/decodeWatch.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/Player.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
 
-function mount({ local = false, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
+function mount({ local = false, saved = null, transcode, backgroundTranscode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
   props = { setEpisodesOpen() {}, ...props };
-  const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
+  const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], backgroundTranscodes = [], cancelled = [];
   const releases = [], settingsSaved = [], windows = [];
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
   // 解码守卫的画布采样与 HEVC 能力探测：测试可控，避免真实 DOM。
@@ -69,7 +69,10 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
     savePlaybackPosition: async (...args) => saves.push(args),
     setPlaybackWindow: async p => { windows.push(p); return { success: true }; },
     prepareOnlinePlay: async p => { prepares.push(p); return prepare ? prepare(p) : { success: true, url: `hongguo-stream://mock-${prepares.length}` }; },
-    transcodeForPlayback: async p => { transcodes.push(p); return transcode ? transcode(p) : { success: true, url: 'file:///mock-compat.mp4' }; },
+    transcodeForPlayback: async p => {
+      if (p.background) { backgroundTranscodes.push(p); return backgroundTranscode ? backgroundTranscode(p) : { success:true, url:'file:///mock-background-' + p.vidIndex + '.mp4' }; }
+      transcodes.push(p); return transcode ? transcode(p) : { success: true, url: 'file:///mock-compat.mp4' };
+    },
     cancelTranscodeForPlayback: async p => cancelled.push(p),
     onTranscodeProgress: fn => { transcodeProgress = fn; return () => { transcodeProgress = null; }; },
     getSettings: async () => ({ compat_mode: true, ...settings }),
@@ -87,7 +90,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   const shortcutModule = { exports: {} };
   vm.runInNewContext(shortcutSource, { module: shortcutModule, exports: shortcutModule.exports, window, Event });
   const decodeWatchModule = { exports: {} };
-  vm.runInNewContext(decodeWatchSource, { module: decodeWatchModule, exports: decodeWatchModule.exports });
+  vm.runInNewContext(decodeWatchSource, { module: decodeWatchModule, exports: decodeWatchModule.exports, window });
   const setTimer = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
   const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === '../decodeWatch' ? decodeWatchModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
   context.exports = context.module.exports;
@@ -118,7 +121,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
     return event;
   };
   render();
-  return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
+  return { props, render, flush, find, media, metadata, saves, prepares, transcodes, backgroundTranscodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
     releases, settingsSaved, windows,
     setFrameLuma: value => { frameLuma = value; }, setHevcAnswer: value => { hevcAnswer = value; },
     // 驱动解码守卫采样一次（按采样周期排定的定时器）。
@@ -190,7 +193,7 @@ if (require.main === module) (async () => {
   });
   await test('compatibility rebuild releases the old source and ignores obsolete results', async () => {
     let resolve, calls = 0;
-    const ui = mount({ local: true, transcode: async () => ++calls === 1
+    const ui = mount({ local: true, transcode: async p => p.vidIndex === 2 ? { success:true, url:'file:///compatible-2.mp4' } : ++calls === 1
       ? { success: true, cached: true, url: 'file:///cached-compat.mp4' }
       : new Promise(done => { resolve = done; }) });
     await ui.flush(); ui.metadata(); ui.media.currentTime = 31;
@@ -203,7 +206,8 @@ if (require.main === module) (async () => {
     ui.episode(2); await ui.flush();
     assert.equal(ui.cancelled.at(-1).requestId, ui.transcodes[1].requestId);
     resolve({ success: true, url: 'file:///cached-compat.mp4' }); await ui.flush();
-    assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-2.mp4');
+    assert.equal(ui.transcodes.at(-1).vidIndex, 2);
+    assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///compatible-2.mp4', 'old result cannot replace the new episode in series compatibility mode');
     ui.unmount();
   });
   await test('legacy disabled setting no longer disables automatic repair; manual retry rebuilds', async () => {
