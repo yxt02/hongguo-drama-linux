@@ -3819,6 +3819,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 620,
     title: APP_TITLE,
+    icon: path.join(__dirname, 'build/icon.png'),
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset',
       trafficLightPosition: { x: 20, y: 18 },

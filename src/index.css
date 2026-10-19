@@ -53,8 +53,8 @@ input::placeholder { color: var(--text-tertiary); }
 .sidebar-window-drag { height: 24px; flex-shrink: 0; -webkit-app-region: drag; }
 .platform-mac .sidebar-window-drag { height: 58px; }
 .sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 13px 20px 30px; }
-.logo { width: 35px; height: 35px; flex-shrink: 0; border-radius: 11px; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; }
-.logo svg { fill: currentColor; stroke-width: 1.2; margin-left: 2px; }
+.logo { width: 35px; height: 35px; flex-shrink: 0; border-radius: 11px; background: transparent; color: white; display: flex; align-items: center; justify-content: center; }
+.logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand-text { font-size: 18px; letter-spacing: -.035em; font-weight: 700; line-height: 1.4; }
 .brand-sub { font-size: 10px; margin-top: 2px; color: var(--text-secondary); }
 .sidebar-menu { display: flex; flex: 1; flex-direction: column; gap: 5px; padding: 0 12px; }

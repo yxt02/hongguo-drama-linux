@@ -1,3 +1,4 @@
+import appIcon from '../build/icon.png';
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { Film, Download, Settings, Play, Home, Search, Clock } from './components/icons';
 import HongguoDownload from './components/HongguoDownload';
@@ -132,7 +133,7 @@ export default function App() {
       <aside className="sidebar" aria-label="主导航">
         <div className="sidebar-window-drag" aria-hidden="true" />
         <div className="sidebar-brand">
-          <div className="logo"><Play size={21} /></div>
+          <div className="logo"><img src={appIcon} alt="" draggable="false" /></div>
           <div><div className="brand-text">{appInfo?.appName || '红果短剧'}</div><div className="brand-sub">{appInfo?.preview ? '独立体验 · 本机保存' : '每一集，都值得期待'}</div></div>
         </div>
         <nav className="sidebar-menu">
