@@ -47,6 +47,24 @@ cd hongguo-linux-x64
 ./install.sh --uninstall  # 卸载
 ```
 
+### 快捷更新（1.74.1 起）
+
+设置 → 检测更新 → **一键更新并重启**。
+从本仓库正式发行版下载，完成 SHA256 与程序版本校验后才安装；
+退出后替换完整目录，失败恢复旧版，并保留一份 `.previous` 备份。
+不覆盖应用目录之外的设置、观看记录及手动下载。
+
+退出应用后也可以执行：
+
+```sh
+hongguo --update --restart
+# 或在解压目录运行 ./更新红果短剧.sh --restart
+```
+
+完整 Linux x64 目录包支持快捷更新，无需另装 Node.js；AppImage 等方式请手动下载安装。
+首次从旧版升级：退出旧版后运行本包的 `./升级现有安装.sh`，直接替换原安装，完成后自动启动，无需卸载或再次下载。
+默认升级 `~/.local/opt/hongguo-drama`，自定义安装可设置 `HONGGUO_INSTALL_DIR`。
+
 **为什么必须用启动器，不能直接跑 `app/hongguo-downloader`？**
 Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，所以应用内无法补救。Ubuntu 23.10+ 的 AppArmor 会阻止用户命名空间沙箱，未提权的 `chrome-sandbox` 又会让 Chromium 直接中止。启动器检测到该组合时自动补 `--no-sandbox`，其余情况不加、保持默认沙箱。
 
@@ -59,7 +77,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.74.0**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.74.1**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 | 安装方式 |
 |---|---|---|
@@ -70,7 +88,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 
 [本仓库 Linux 发行页](https://github.com/yxt02/hongguo-drama-linux/releases) · [上游正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.73 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.73) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.73/SHA256SUMS.txt)
 
-- **更新旧版**：先退出应用，再替换程序，保留原有用户资料目录。软件只提示更新，不会自动下载或安装。
+- **更新旧版**：Linux 1.74.1 起提供设置页一键更新及 `hongguo --update --restart`。首次可运行 `升级现有安装.sh` 直接升级；下载和安装均由用户主动触发。
 - **Mac**：1.73 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
 - **Windows**：EXE 尚未签名，可能出现系统安全提示。请核对下载来源；首次启动会展开临时运行文件，设置与观看记录仍保存在用户资料目录。
 - **普通使用只需安装包**：Assets 中的 `source` 文件和 GitHub 自动生成的 Source code 是源码，不能直接运行。
@@ -318,7 +336,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.0**（源码配置版本 `1.74.0`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.1**（源码配置版本 `1.74.1`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
 1.73 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
 
@@ -329,7 +347,8 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
-| **1.74.0（Linux）** | 前后各五集磁盘缓存、统一高清优先选择、缓存校验与 HLS 转码修复 | [发行说明](docs/release-1.74-linux.md) |
+| **1.74.1（Linux）** | 一键下载、校验并重启更新，旧版备份及失败回滚，无需卸载重装 | [发行说明](docs/release-1.74.1-linux.md) |
+| 1.74.0（Linux） | 前后各五集磁盘缓存、统一高清优先选择、缓存校验与 HLS 转码修复 | [发行说明](docs/release-1.74-linux.md) |
 | 1.73.1（Linux） | 黑屏有声自动转 H.264；HEVC 不支持时直接转兼容格式 | [发行页](https://github.com/yxt02/hongguo-drama-linux/releases) |
 | 1.6 | 下载清晰度、本集弹幕、播放与下载恢复 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6) |
 | 1.5 | 片源兼容、播放失败恢复、全屏切集控制条优化 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.5) |

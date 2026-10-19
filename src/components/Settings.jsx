@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import useDialogKeyboard from './useDialogKeyboard';
 import './Settings.css';
+import AppUpdateControls from './AppUpdateControls';
 import AppearanceSettings from './AppearanceSettings';
 import ShortcutSettings from './ShortcutSettings';
 import CustomSources from './CustomSources';
@@ -300,6 +301,7 @@ function SettingsPage({ active = true, preview = false }) {
         <div className="settings-group">
           <span className="settings-label">检测更新</span>
           <label className="proxy-switch-row"><input type="checkbox" aria-label="自动检测更新" checked={settings.app_updates_enabled !== false} onChange={event => update('app_updates_enabled', event.target.checked)} /><span className="proxy-switch-text">自动检测更新<em>启动时及运行期间每 6 小时检查 GitHub 正式新版。保存后生效；提醒可关闭，不影响使用旧版，不会自动下载安装。</em></span></label>
+          <AppUpdateControls />
         </div>
         </>}
 

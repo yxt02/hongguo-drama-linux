@@ -61,6 +61,23 @@ cd hongguo-linux-x64
 
 Installs entirely under `~/.local` — **no root / sudo needed**.
 
+### One-click updates (1.74.1+)
+
+Open **设置 → 检测更新 → 一键更新并重启** to check, download, verify and restart
+into the new version with one click. No uninstall is needed. Downloads come from
+this Linux fork, are verified with SHA256 and the embedded app version, and the
+previous installation is kept as a `.previous` backup. Settings, watch history and
+manual downloads outside the application directory are preserved.
+
+To upgrade an older installation for the first time, exit it and run
+`./升级现有安装.sh` from the new extracted bundle. This uses the files already
+extracted, without another download. The default target is
+`~/.local/opt/hongguo-drama`; set `HONGGUO_INSTALL_DIR` for a custom location.
+
+Afterwards, terminal updates are also available with `hongguo --update --restart`.
+Supported for writable Linux x64 directory bundles; other package formats require
+manual updates.
+
 | Path | What it is |
 |---|---|
 | `红果短剧.sh` | **The entry point.** Double-click this or run it from a terminal. |
@@ -255,7 +272,7 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.74.0** (`1.74.0` in source); upstream Mac/Windows builds remain at
+The current Linux release is **1.74.1** (`1.74.1` in source); upstream Mac/Windows builds remain at
 1.73. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
@@ -276,7 +293,8 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
-| **1.74.0 (Linux)** | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |
+| **1.74.1 (Linux)** | One-click verified update and restart, previous-version backup and rollback, no uninstall |
+| 1.74.0 (Linux) | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |
 | 1.73.1 (Linux) | Auto-repair black screen with sound (H.264 fallback); transcode-first for undecodable HEVC |
 | 1.73 | Automatic transient download retries (10/30/60s) |
 | 1.72 | Auto-hide landscape controls; safer media-connection reuse |

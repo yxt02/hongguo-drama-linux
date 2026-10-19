@@ -35,7 +35,8 @@ rm -rf "$OPT_DIR"
 mkdir -p "$OPT_DIR" "$BIN_DIR" "$DESKTOP_DIR"
 cp -a "$HERE/app" "$OPT_DIR/app"
 cp -a "$HERE/红果短剧.sh" "$OPT_DIR/红果短剧.sh"
-chmod +x "$OPT_DIR/红果短剧.sh"
+cp -a "$HERE/更新红果短剧.sh" "$HERE/linux-update.cjs" "$OPT_DIR/"
+chmod +x "$OPT_DIR/红果短剧.sh" "$OPT_DIR/更新红果短剧.sh"
 
 # 桌面图标：用随包附带的 PNG，并装到安装目录内
 # （不能指向 $HERE，那会在解压目录删除后失效）

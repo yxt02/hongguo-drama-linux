@@ -33,7 +33,11 @@ const checks = [
   "check-hls-media.cjs",
   "check-decrypt-worker.cjs",
   "check-media-access.cjs",
-  "check-linux-package.cjs"
+  "check-linux-package.cjs",
+  "check-app-update.cjs",
+  "check-linux-update.cjs",
+  "check-linux-update-controller.cjs",
+  "check-update-controls.cjs"
 ];
 let failed = 0;
 for (const file of checks) {

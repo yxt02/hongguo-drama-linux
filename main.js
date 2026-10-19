@@ -33,7 +33,7 @@ const store = require('./src/store');
 const watchHistory = require('./src/native/watch-history');
 const { fitWindowBounds } = require('./src/native/window-layout');
 const { createEpisodePanelController } = require('./src/native/episode-panel');
-const { availableRelease } = require('./src/native/app-update');
+const { availableRelease, releasesApi } = require('./src/native/app-update');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const mediaAccess = require('./src/native/media-access').createMediaAccess(process.env.VITE_DEV_SERVER_URL);
@@ -3634,29 +3634,38 @@ ipcMain.handle('open-folder', async (event, taskId) => {
   return { success: false, error: '文件夹不存在' };
 });
 
-// ===== 可关闭的新版本提醒：只检测，不下载或安装 =====
+// ===== Linux 快捷更新：用户下载、校验后主动重启安装 =====
+require('./src/native/linux-update-controller').registerLinuxUpdates({
+  ipcMain, app, version: APP_VERSION, request: axios,
+  platform: process.platform, arch: process.arch, execPath: process.execPath,
+  allowed: event => !IS_PREVIEW && !!mainWindow && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame,
+  send: sendToRenderer,
+});
+// 自动检查只提醒；下载和安装始终由用户操作。
+
 let updateRequest = null;
 let latestAppRelease = null;
-ipcMain.handle('check-app-update', async event => {
+ipcMain.handle('check-app-update', async (event, options) => {
+  const manual = options?.manual === true;
   if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents) return { enabled: false, release: null };
-  if (getCurrentSettings().app_updates_enabled === false) {
+  if (!manual && getCurrentSettings().app_updates_enabled === false) {
     latestAppRelease = null;
     return { enabled: false, release: null };
   }
   if (!updateRequest) {
-    updateRequest = axios.get('https://api.github.com/repos/jackotom/hongguo-drama/releases/latest', {
+    updateRequest = axios.get(releasesApi(process.platform), {
       timeout: 10000, maxRedirects: 0, maxContentLength: 1024 * 1024,
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hongguo-Drama-Update-Check' },
-    }).then(response => availableRelease(response.data, APP_VERSION)).catch(() => null)
+    }).then(response => availableRelease(response.data, APP_VERSION, { platform: process.platform })).catch(() => null)
       .finally(() => { updateRequest = null; });
   }
   const release = await updateRequest;
   const enabled = getCurrentSettings().app_updates_enabled !== false;
-  latestAppRelease = enabled ? release : null;
+  latestAppRelease = enabled || manual ? release : null;
   return { enabled, release: latestAppRelease };
 });
 ipcMain.handle('open-app-update', async event => {
-  if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents || !latestAppRelease || getCurrentSettings().app_updates_enabled === false) {
+  if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents || !latestAppRelease) {
     return { success: false, error: '更新信息已失效，请稍后重试' };
   }
   try { await shell.openExternal(latestAppRelease.url); return { success: true }; }

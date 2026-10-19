@@ -19,6 +19,11 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+if [ "${1:-}" = "--update" ]; then
+    shift
+    exec /bin/sh "$HERE/更新红果短剧.sh" "$@"
+fi
+
 needs_no_sandbox() {
     [ "${HONGGUO_NO_SANDBOX:-}" = "1" ] && return 0
 

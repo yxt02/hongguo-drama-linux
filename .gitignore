@@ -80,3 +80,6 @@ dist-local/
 HANDOFF.md
 
 .local/
+
+# Bundled standalone Linux updater
+build/linux-update.cjs

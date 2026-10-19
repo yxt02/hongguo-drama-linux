@@ -47,6 +47,25 @@ function writeUsage(target) {
 
 不需要 root / sudo，全部装在家目录（\`~/.local\`）。
 
+## 快捷更新
+
+在「设置 → 检测更新」点击「一键更新并重启」。
+下载完成会校验 SHA256，退出应用后替换程序，并保留一份旧版备份。
+观看记录、设置及手动下载保存在应用目录之外，不会被覆盖。
+
+也可退出应用后在终端运行：
+\`\`\`sh
+hongguo --update --restart
+# 或在解压目录运行 ./更新红果短剧.sh --restart
+\`\`\`
+
+更新失败时保留旧版；已就绪但未安装的临时包可在设置页取消。
+仅支持 Linux x64 的可写完整目录包。AppImage 等安装方式请从发布页手动更新。
+
+首次从没有此功能的旧版升级：先退出旧版，运行本包的 **升级现有安装.sh**。
+脚本直接使用本解压目录替换原安装，不重新下载，不需要卸载，完成后自动启动。
+默认升级 ~/.local/opt/hongguo-drama；自定义安装可设置 HONGGUO_INSTALL_DIR。
+
 ## 目录说明
 
 | 路径 | 作用 |
@@ -91,11 +110,16 @@ function main() {
   step('校验 / 准备内置 FFmpeg');
   run('node', [path.join('scripts', 'setup-ffmpeg-linux.js')]);
 
+  step('生成独立更新器');
+  run('node', [path.join('scripts', 'build-linux-updater.cjs')]);
+
   step('生成前端');
   run('npm', ['run', 'build:react']);
 
   step('打包 Electron 应用');
-  run('npx', ['electron-builder', '--linux', '--x64', '--publish', 'never', '--dir']);
+  const builderArgs = ['electron-builder', '--linux', '--x64', '--publish', 'never', '--dir'];
+  if (process.env.HONGGUO_ELECTRON_DIST) builderArgs.push('--config.electronDist=' + path.resolve(process.env.HONGGUO_ELECTRON_DIST), '--config.npmRebuild=false');
+  run('npx', builderArgs);
 
   if (!fs.existsSync(path.join(unpacked, 'hongguo-downloader'))) {
     throw new Error('未生成 dist/linux-unpacked/hongguo-downloader');
@@ -107,6 +131,11 @@ function main() {
   fs.cpSync(unpacked, path.join(stage, 'app'), { recursive: true });
   fs.copyFileSync(launcher, path.join(stage, '红果短剧.sh'));
   fs.copyFileSync(installer, path.join(stage, 'install.sh'));
+  fs.copyFileSync(path.join(root, 'scripts/update-linux.sh'), path.join(stage, '更新红果短剧.sh'));
+  fs.copyFileSync(path.join(root, 'scripts/upgrade-existing-linux.sh'), path.join(stage, '升级现有安装.sh'));
+  fs.copyFileSync(path.join(root, 'build/linux-update.cjs'), path.join(stage, 'linux-update.cjs'));
+  fs.chmodSync(path.join(stage, '更新红果短剧.sh'), 0o755);
+  fs.chmodSync(path.join(stage, '升级现有安装.sh'), 0o755);
   // Desktop entries need an on-disk icon; the app's own icon is inside the
   // asar, so ship the source PNG next to the launcher for install.sh to use.
   fs.copyFileSync(path.join(root, 'build', 'icon.png'), path.join(stage, 'icon.png'));
