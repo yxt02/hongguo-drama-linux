@@ -153,7 +153,7 @@ function checkCustomAccess(vid) {
 }
 async function prepareHlsFile(playInfo, output, options = {}) {
   try { return await require('./src/native/hls-media').remuxHls({ url:playInfo.url, output, ffmpeg:resolveFfmpeg('ffmpeg'),
-    headers:{ ...(playInfo.userAgent ? {'User-Agent':playInfo.userAgent} : {}), ...(playInfo.referer ? {Referer:playInfo.referer} : {}) },
+    headers:{ ...(playInfo.userAgent ? {'User-Agent':playInfo.userAgent} : {}), ...(playInfo.referer && !playInfo.omitReferer ? {Referer:playInfo.referer} : {}) },
     ...options, checkAccess:() => checkCustomAccess(playInfo.vid) }); }
   catch (error) {
     checkCustomAccess(playInfo.vid);
@@ -1758,6 +1758,9 @@ async function requestMedia(playInfo, options = {}) {
     ...((web || custom) ? require('./src/native/web-media-guard').webMediaRequestOptions(url.href) : {}),
     headers: { 'User-Agent': playInfo.userAgent || (web ? hongguo.WEB_UA : hongguo.UA), 'Accept-Encoding': 'identity',
       ...((playInfo.referer || web) ? { Referer: playInfo.referer || hongguo.WEB_REFERER } : {}), ...options.headers } };
+  if (playInfo.omitReferer) {
+    for (const name of Object.keys(config.headers)) if (name.toLowerCase() === 'referer') delete config.headers[name];
+  }
   let response;
   for (let attempt = 0; attempt < 2; attempt++) {
     try { response = await axios(config); break; }
@@ -1771,7 +1774,7 @@ async function requestMedia(playInfo, options = {}) {
       }
       const retryable = web ? [404, 410].includes(status) || status >= 500 && status <= 599 : status === 403;
       if (!cancelled && attempt === 0 && retryable) {
-        if (!web && !config.headers.Referer) config.headers.Referer = hongguo.VIDEO_REFERER;
+        if (!web && !playInfo.omitReferer && !config.headers.Referer) config.headers.Referer = hongguo.VIDEO_REFERER;
         continue;
       }
       if (!cancelled && config.method === 'GET' && (retryable || status === 403)) hongguo.markWebMediaFailure?.(playInfo);
@@ -1859,7 +1862,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       }
       const seen = new Set();
       for (const candidate of [info, ...(options.recover === false ? [] : info.variants || info.candidates || [])]) {
-        const identity = JSON.stringify([candidate.url, candidate.contentKey, candidate.spadeA, candidate.userAgent, candidate.referer]);
+        const identity = JSON.stringify([candidate.url, candidate.contentKey, candidate.spadeA, candidate.userAgent, candidate.referer, candidate.omitReferer]);
         if (!candidate.url || seen.has(identity)) continue;
         seen.add(identity);
         cancelled();
@@ -1941,7 +1944,7 @@ function registerStreamProtocol() {
     try {
       return await withMediaRecovery(session.vid, entry.seriesId,
         { playInfo: entry.playInfo, signal: controller.signal, recover: !session.mediaStarted }, async playInfo => {
-        const identity = JSON.stringify([playInfo.url, playInfo.contentKey, playInfo.spadeA]);
+        const identity = JSON.stringify([playInfo.url, playInfo.contentKey, playInfo.spadeA, playInfo.userAgent, playInfo.referer, playInfo.omitReferer]);
         const checkIdentity = () => {
           if (session.mediaStarted && session.mediaIdentity !== identity) throw new Error('片源已变化，请重新连接播放');
         };

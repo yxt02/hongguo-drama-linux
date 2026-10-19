@@ -37,6 +37,8 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   const server = http.createServer((r, s) => {
     hits.push({url:r.url, headers:r.headers});
     if (r.url === '/missing') { s.writeHead(404); s.end(); return; }
+    if (r.url.startsWith('/native') && r.headers.referer) { s.writeHead(403); s.end(); return; }
+    if (r.url === '/native-retry' && hits.filter(hit => hit.url === '/native-retry').length === 1) { s.writeHead(403); s.end(); return; }
     if (r.url === '/html') { s.setHeader('Content-Type','text/html'); s.end('bad'); return; }
     if (r.url === '/broken') { s.writeHead(200, {'Content-Length':'999'}); s.write('partial'); setTimeout(() => s.destroy(), 5); return; }
     if (r.url === '/race') {
@@ -157,6 +159,21 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   await check('media request retains provider UA and Referer',async()=>{
     const h=harness(async()=>({...info('/identity'), userAgent:'app-provider',referer:'https://novel.snssdk.com/'})), t=task('identity');
     await h.context.executeHongguoDownload(t); assert.equal(t.status,'completed',t.error);
+  });
+  await check('native App source omits Referer while preserving UA and Range',async()=>{
+    const h=harness(async()=>info('/native'));
+    const response=await h.context.requestMedia({...info('/native'), userAgent:'app-provider',referer:'https://novelquickapp.com/',omitReferer:true},
+      {headers:{rEfErEr:'https://invalid.example/',Range:'bytes=2-5'}});
+    let body='';for await(const chunk of response.data)body+=chunk.toString();
+    assert.equal(response.status,206);assert.equal(body,'mple');
+    assert.equal(hits.at(-1).headers.referer,undefined);assert.equal(hits.at(-1).headers['user-agent'],'app-provider');
+  });
+  await check('App 403 retry does not reintroduce the rejected Referer',async()=>{
+    const h=harness(async()=>info('/native-retry'));
+    const response=await h.context.requestMedia({...info('/native-retry'),omitReferer:true});
+    for await(const chunk of response.data){}
+    const requests=hits.filter(hit=>hit.url==='/native-retry');
+    assert.equal(requests.length,2);assert.ok(requests.every(hit=>!hit.headers.referer));assert.equal(response.status,200);
   });
   await check('permanent failure stops within bounded attempts and leaves no file',async()=>{
     let lookups=0; const before=hits.length; const h=harness(async()=>{lookups++;return info('/missing','web');}),t=task('permanent');

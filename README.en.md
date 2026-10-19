@@ -280,7 +280,7 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.74.2** (`1.74.2` in source); upstream Mac/Windows builds remain at
+The current Linux release is **1.74.3** (`1.74.3` in source); upstream Mac/Windows builds remain at
 1.73. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
@@ -301,7 +301,8 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
-| **1.74.2 (Linux)** | Tray menu, configurable X button, complete quit and hidden-search-window cleanup |
+| **1.74.3 (Linux)** | Fix App video CDN 403 caused by browser Referer; live 1080p download/decode verified |
+| 1.74.2 (Linux) | Tray menu, configurable X button, complete quit and hidden-search-window cleanup |
 | 1.74.1 (Linux) | One-click verified update and restart, previous-version backup and rollback, no uninstall |
 | 1.74.0 (Linux) | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |
 | 1.73.1 (Linux) | Auto-repair black screen with sound (H.264 fallback); transcode-first for undecodable HEVC |

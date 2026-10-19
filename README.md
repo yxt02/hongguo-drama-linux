@@ -84,7 +84,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.74.2**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.74.3**（Linux fork；Mac/Windows 上游为 1.73）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 | 安装方式 |
 |---|---|---|
@@ -343,7 +343,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.2**（源码配置版本 `1.74.2`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+上游当前正式版为 **1.73**；本仓库 Linux 版为 **1.74.3**（源码配置版本 `1.74.3`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
 1.73 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。Mac 成品代码使用隔离资料验证等待重试、立即重试、停止及正常本地视频播放；故障由受控模拟提供。Windows 云端成品检查通过，EXE 未签名。下载重试 14 项、下载界面 13 项及媒体恢复回归通过；真实上游与长期下载不保证全部成功。
 
@@ -354,7 +354,8 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
-| **1.74.2（Linux）** | 系统托盘菜单、点 X 行为选择、完整退出及隐藏搜索窗口残留修复 | [发行说明](docs/release-1.74.2-linux.md) |
+| **1.74.3（Linux）** | 修复 App 高清视频请求错误 Referer 导致的 403，真实取流与解码验证 | [发行说明](docs/release-1.74.3-linux.md) |
+| 1.74.2（Linux） | 系统托盘菜单、点 X 行为选择、完整退出及隐藏搜索窗口残留修复 | [发行说明](docs/release-1.74.2-linux.md) |
 | 1.74.1（Linux） | 一键下载、校验并重启更新，旧版备份及失败回滚，无需卸载重装 | [发行说明](docs/release-1.74.1-linux.md) |
 | 1.74.0（Linux） | 前后各五集磁盘缓存、统一高清优先选择、缓存校验与 HLS 转码修复 | [发行说明](docs/release-1.74-linux.md) |
 | 1.73.1（Linux） | 黑屏有声自动转 H.264；HEVC 不支持时直接转兼容格式 | [发行页](https://github.com/yxt02/hongguo-drama-linux/releases) |
