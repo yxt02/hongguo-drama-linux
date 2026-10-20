@@ -75,7 +75,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
     },
     cancelTranscodeForPlayback: async p => cancelled.push(p),
     onTranscodeProgress: fn => { transcodeProgress = fn; return () => { transcodeProgress = null; }; },
-    getSettings: async () => ({ compat_mode: true, ...settings }),
+    getSettings: async () => ({ compat_mode: true, playback_decode_mode: 'auto', ...settings }),
     saveSettings: async s => { settingsSaved.push(s); return { success: true }; },
     releaseOnlinePlay: p => { structuredClone(p); releases.push(p); return Promise.resolve(); },
     compatCacheStatus: async () => ({ success: true, files: 1, bytes: 10 }),

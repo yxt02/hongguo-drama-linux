@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict');
+const {mount}=require('./check-player-resume.cjs');
+(async()=>{
+  const ui=mount({settings:{playback_decode_mode:undefined},props:{target:{seriesId:'A',vidIndex:1}}});
+  await ui.flush();assert.equal(ui.transcodes.length,1,'missing setting on existing install defaults to H.264');
+  assert.equal(ui.prepares.filter(p=>!p.prefetch).length,0,'never attempt original decoding first');
+  assert.ok(ui.button('本剧：兼容解码'));ui.metadata();ui.media.currentTime=23;
+  ui.episode(2);await ui.flush();assert.equal(ui.transcodes.at(-1).vidIndex,2);
+  ui.button('本剧：兼容解码').props.onClick();await ui.flush();
+  assert.ok(ui.button('本剧：自动解码'));
+  ui.episode(1);await ui.flush();assert.equal(ui.prepares.at(-1).vidIndex,1);
+  ui.button('本剧：自动解码').props.onClick();await ui.flush();assert.ok(ui.button('本剧：兼容解码'));ui.unmount();
+  const storage=new Map();
+  const first=mount({storage,local:true,settings:{playback_decode_mode:undefined}});await first.flush();
+  assert.equal(first.transcodes.length,1,'local originals also use H.264 compatibility');
+  first.button('本剧：兼容解码').props.onClick();await first.flush();first.unmount();
+  const again=mount({storage,settings:{playback_decode_mode:undefined},props:{target:{seriesId:'A',vidIndex:1}}});await again.flush();
+  assert.equal(again.transcodes.length,0,'explicit per-series automatic override survives restart');again.unmount();
+  const other=mount({storage,seriesId:'B',settings:{playback_decode_mode:undefined},props:{target:{seriesId:'B',vidIndex:1}}});await other.flush();
+  assert.equal(other.transcodes.length,1,'auto override does not affect other dramas');other.unmount();
+  console.log('PASS default H.264 online/local, first-frame routing, next episodes, per-series override and restart');
+})().catch(e=>{console.error(e);process.exitCode=1});

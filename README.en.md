@@ -41,13 +41,18 @@
 
 ### Season switching
 
-In the player, open **关联 / 管理季** (Manage seasons). Confirm the current season number, then search for another season or paste its share link / series ID. Choose a season number and explicitly confirm the association. Use the season dropdown to switch.
+The player automatically searches the same provider for matching seasons and displays season buttons below the title. Click to switch, without manually linking first. Trailing Arabic numbers, Chinese numerals, 第几季/第几部, Season N, SＮ, brackets and full-width numbers are supported. Each season keeps its own episodes, playback position, downloads and decoder preference. Unwatched seasons start at the first playable episode.
 
-Each season keeps its own playback position, episodes, downloads and decoder preference. Switching resumes the selected season, or starts its first playable episode if unwatched. Associations can be renumbered or removed without deleting videos or history. Only seasons from the same provider can be linked. Matching titles are suggestions only; the current sources do not expose reliable official season relationships. Associations remain local to this installation.
+Title matching is a heuristic, not an official season relationship. Other titles and providers are filtered; duplicate season numbers keep their full titles. Use **修正季信息** to correct nonstandard names manually. Failed background searches can be retried without interrupting playback.
 
-### Current highlights · 1.74.7
+### GitHub search
 
-- **Season switching**: confirmed associations, a season dropdown, and independent resume positions.
+This repository is a fork. Include `fork:true` in repository searches, e.g. `hongguo linux fork:true` or `红果 linux fork:true`. Topics include `hongguo`, `hongguo-drama`, `linux`, `video-player` and `h264`.
+
+### Current highlights · 1.74.8
+
+- **Automatic season buttons**: detect numbered seasons and switch directly from the title area.
+- **H.264 by default**: prepare a compatible stream before first playback, preserve dimensions and reuse verified caches; individual dramas can opt into automatic decoding.
 
 - **Matching new icon:** the README, launcher, window, tray and sidebar use the same artwork with transparent outer corners and no white border.
 - **App HD by default:** automatic mode selects the highest available measured resolution. Failures offer retry rather than falling back to low-resolution web streams; actual quality and availability depend on the source.
@@ -194,11 +199,11 @@ fixed 1080p nor a complete series.
   history. Switching pages in the app keeps playback and progress going.
 - **0.25×–4× speed** — 16 steps. The speed readout is a button that steps +0.25×, wrapping to 1×
   after 4×. The three-dot menu picks a level directly; speed is kept across episodes.
-- **Compatible playback** — compatibility mode is on by default; while playing, the app detects
-  "black picture with sound" and undecodable frames and switches to H.264 conversion
-  automatically — no manual toggle needed. When a source is HEVC and the machine cannot decode
-  it, the app transcodes first instead of showing a black screen. Manual "转码后播放" stays
-  available. Progress is shown, and you can cancel or clear the cache.
+- **Compatible playback** — H.264 compatibility is the default from the first frame, for both
+  local and online episodes. Conversion keeps the source dimensions and reuses verified
+  compatibility caches. A drama can opt into automatic decoding and remember that choice;
+  decode failure detection still provides automatic H.264 repair in that mode. Progress,
+  cancellation and cache cleanup remain available.
 - **Failure recovery** — cancel preparation, retry the episode, reconnect the source, or try
   compatibility transcoding. Expired addresses are refreshed a limited number of times; hardware
   transcode failures fall back to software.
@@ -295,7 +300,7 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.74.7** (`1.74.7` in source). macOS and Windows releases are maintained upstream. Package and verification records live
+The current Linux release is **1.74.8** (`1.74.8` in source). macOS and Windows releases are maintained upstream. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
 **Linux verification** — all 41 core offline regression scripts pass, including series decoding
@@ -312,6 +317,7 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
+| **1.74.8 (Linux)** | H.264 compatibility by default; detect Arabic/Chinese season numbers and switch from visible season buttons |
 | **1.74.7 (Linux)** | Associate multiple seasons, switch from the player dropdown, and resume each season independently |
 | **1.74.6 (Linux)** | New transparent app icon shared by launcher, window, tray, sidebar and README |
 | 1.74.5 (Linux) | Remember series compatibility decoding and preconvert nearby episodes |

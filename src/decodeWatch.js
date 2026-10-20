@@ -197,8 +197,8 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
   };
 }
 
-// Device-local series policy. Only successful decode repair should enable it;
-// network failures and ordinary dark scenes must never learn this preference.
+// Device-local series policy. Explicit choices and successful decode repairs persist;
+// network failures and ordinary dark scenes must never learn a preference.
 export const SERIES_COMPAT_KEY = 'hongguo:series-compat:v1';
 function readCompatSeries(storage) {
   try {
@@ -209,8 +209,19 @@ function readCompatSeries(storage) {
     return Array.isArray(rows) ? [...new Set(rows.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 256))].slice(-200) : [];
   } catch (_) { return []; }
 }
-export function seriesNeedsCompat(seriesId, storage) {
-  return !!seriesId && readCompatSeries(storage).includes(String(seriesId));
+export const SERIES_AUTO_KEY = 'hongguo:series-auto:v1';
+function readAutoSeries(storage) {
+  try {
+    storage = storage || (typeof window !== 'undefined' ? window.localStorage : null);
+    const value = JSON.parse(storage?.getItem(SERIES_AUTO_KEY) || '[]');
+    return Array.isArray(value) ? value.filter(id => typeof id === 'string').slice(-200) : [];
+  } catch (_) { return []; }
+}
+export function seriesNeedsCompat(seriesId, storage, defaultCompat = false) {
+  if (!seriesId) return false;
+  const id = String(seriesId);
+  if (readCompatSeries(storage).includes(id)) return true;
+  return defaultCompat && !readAutoSeries(storage).includes(id);
 }
 export function rememberSeriesCompat(seriesId, enabled = true, storage) {
   if (!seriesId || String(seriesId).length > 256) return;
@@ -219,5 +230,8 @@ export function rememberSeriesCompat(seriesId, enabled = true, storage) {
     const rows = readCompatSeries(storage).filter(id => id !== String(seriesId));
     if (enabled) rows.push(String(seriesId));
     storage?.setItem(SERIES_COMPAT_KEY, JSON.stringify(rows.slice(-200)));
+    const automatic = readAutoSeries(storage).filter(id => id !== String(seriesId));
+    if (!enabled) automatic.push(String(seriesId));
+    storage?.setItem(SERIES_AUTO_KEY, JSON.stringify(automatic.slice(-200)));
   } catch (_) { /* The current session still remembers the mode if storage is unavailable. */ }
 }

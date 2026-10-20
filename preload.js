@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchSeries: (keyword, options) => ipcRenderer.invoke('search-series', keyword, options),
   searchResolve: (seriesId) => ipcRenderer.invoke('search-resolve', seriesId),
   searchWindowShow: (visible, sourceUrl) => ipcRenderer.invoke('search-window-show', visible, sourceUrl),
+  discoverSeriesSeasons: (seriesId) => ipcRenderer.invoke('discover-series-seasons', seriesId),
   getSeriesSeasons: (seriesId) => ipcRenderer.invoke('get-series-seasons', seriesId),
   linkSeriesSeason: (payload) => ipcRenderer.invoke('link-series-season', payload),
   unlinkSeriesSeason: (payload) => ipcRenderer.invoke('unlink-series-season', payload),

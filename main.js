@@ -180,6 +180,7 @@ function getDefaultSettings() {
     max_concurrent: 3,
     download_quality: 'auto',
     playback_quality: 'auto',
+    playback_decode_mode: 'h264',
     custom_sources: [],
     // 看完一集后自动删除本地文件（边看边清，避免占用磁盘）
     auto_delete_watched: false,
@@ -1094,7 +1095,7 @@ ipcMain.handle('browse-list', (_event, options) =>
   require(String(options?.source).startsWith('custom:') ? './src/native/custom-source' : options?.source === 'hema' ? './src/native/hema'
     : options?.source === 'xifan' ? './src/native/xifan' : './src/native/catalog').browseList(options));
 
-ipcMain.handle('search-series', async (event, keyword, options = {}) => {
+async function searchSeriesForSource(keyword, options = {}) {
   const kw = String(keyword || '').trim();
   if (!kw) return { success: false, error: '请输入搜索关键词' };
   try {
@@ -1106,7 +1107,8 @@ ipcMain.handle('search-series', async (event, keyword, options = {}) => {
     console.error('[Search] 失败:', error.message);
     return { success: false, error: error.message };
   }
-});
+}
+ipcMain.handle('search-series', (_event, keyword, options) => searchSeriesForSource(keyword, options));
 
 // 搜索选中某部剧后，拉取完整分集并登记档案
 ipcMain.handle('search-resolve', async (event, seriesId) => {
@@ -1125,6 +1127,27 @@ ipcMain.handle('search-resolve', async (event, seriesId) => {
 ipcMain.handle('get-series-seasons', (_event, seriesId) => {
   try { return {success:true,data:require('./src/native/season-groups').view(seriesRegistry,String(seriesId))}; }
   catch(error) { return {success:false,error:error.message}; }
+});
+const seasonSearchCache = new Map();
+ipcMain.handle('discover-series-seasons', async (_event, seriesId) => {
+  try {
+    const seasons = require('./src/native/season-groups');
+    const current = seasons.view(seriesRegistry, String(seriesId));
+    if (!current.query || current.query.length < 2) return {success:true,data:current};
+    const key = current.source + ':' + current.query;
+    let cached = seasonSearchCache.get(key);
+    if (!cached || Date.now() - cached.time > 5 * 60 * 1000) {
+      const entry = {time:Date.now()};
+      entry.promise = searchSeriesForSource(current.query, {source:current.source}).then(result => {
+        if (!result?.success) throw Error(result?.error || '自动查找其他季失败');
+        return (result.results || []).slice(0,100);
+      }).catch(error => { if (seasonSearchCache.get(key) === entry) seasonSearchCache.delete(key); throw error; });
+      seasonSearchCache.set(key, entry); cached = entry;
+      if (seasonSearchCache.size > 100) seasonSearchCache.delete(seasonSearchCache.keys().next().value);
+    }
+    const rows = await cached.promise;
+    return {success:true,data:seasons.view(seriesRegistry,String(seriesId),rows)};
+  } catch(error) { return {success:false,error:error.message}; }
 });
 for (const [channel, operation] of [['link-series-season','link'],['unlink-series-season','unlink']]) {
   ipcMain.handle(channel, (_event, payload = {}) => {

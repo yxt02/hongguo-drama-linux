@@ -25,21 +25,22 @@ function mount(overrides={}) {
  const find=fn=>{let result;const walk=n=>{if(!n||typeof n!=='object')return;if(fn(n)&&!result)result=n;n.children?.forEach(walk);};walk(tree);return result;};
  render();return {props,render,flush,links,switches,find,button:label=>find(n=>n.type==='button'&&text(n).includes(label)),unmount:()=>cleanups.forEach(f=>f?.())};
 }
-(async()=>{
- const ui=mount();await ui.flush();ui.button('关联 / 管理季').props.onClick();await ui.flush();
+module.exports={mount};
+if(require.main===module)(async()=>{
+ const ui=mount();await ui.flush();ui.button('修正季信息').props.onClick();await ui.flush();
  ui.find(n=>n.type==='form').props.onSubmit({preventDefault(){}});await ui.flush();
  assert.equal(ui.links.length,0,'search must never silently associate matching titles');
  ui.button('关联为第 2 季').props.onClick();await ui.flush();
  assert.equal(ui.links[0].targetSeriesId,'B');assert.equal(ui.links[0].seasonNumber,2);
- ui.find(n=>n.type==='select').props.onChange({target:{value:'B'}});await ui.flush();assert.deepEqual(ui.switches,['B']);ui.unmount();
+ ui.find(n=>n.props['aria-label']==='切换到第 2 季 · 归来 第二季').props.onClick();await ui.flush();assert.deepEqual(ui.switches,['B']);ui.unmount();
  const gate=defer(), stale=mount({getSeriesSeasons:id=>id==='A'?gate.promise:Promise.resolve({success:true,data:data(id)})});
  stale.props.seriesId='C';stale.render();await stale.flush();gate.resolve({success:true,data:data('A',true)});await stale.flush();
- assert.equal(stale.find(n=>n.type==='option').props.value,'C','old season response must not replace new selection');stale.unmount();
- const searchGate=defer(), search=mount({searchSeries:()=>searchGate.promise});await search.flush();search.button('关联 / 管理季').props.onClick();await search.flush();
- search.find(n=>n.type==='form').props.onSubmit({preventDefault(){}});search.render();assert.equal(search.button('关联 / 管理季').props.disabled,true,'cannot invalidate an in-flight operation by reloading');
+ assert.equal(stale.find(n=>n.props['aria-label']==='切换到第 1 季 · 归来').props.key,'C','old season response must not replace new selection');stale.unmount();
+ const searchGate=defer(), search=mount({searchSeries:()=>searchGate.promise});await search.flush();search.button('修正季信息').props.onClick();await search.flush();
+ search.find(n=>n.type==='form').props.onSubmit({preventDefault(){}});search.render();assert.equal(search.button('修正季信息').props.disabled,true,'cannot invalidate an in-flight operation by reloading');
  search.props.seriesId='C';search.render();await search.flush();searchGate.resolve({success:true,results:[{series_id:'obsolete'}]});await search.flush();
- search.button('关联 / 管理季').props.onClick();await search.flush();assert.equal(search.find(n=>n.props.key==='obsolete'),undefined);search.unmount();
- const failed=mount({linkSeriesSeason:async()=>({success:false,error:'季号冲突'})});await failed.flush();failed.button('关联 / 管理季').props.onClick();await failed.flush();
+ search.button('修正季信息').props.onClick();await search.flush();assert.equal(search.find(n=>n.props.key==='obsolete'),undefined);search.unmount();
+ const failed=mount({linkSeriesSeason:async()=>({success:false,error:'季号冲突'})});await failed.flush();failed.button('修正季信息').props.onClick();await failed.flush();
  failed.button('保存当前季号').props.onClick();await failed.flush();assert.ok(failed.find(n=>n.props.role==='alert').children.includes('季号冲突'));assert.equal(failed.button('保存当前季号').props.disabled,false);failed.unmount();
 
  const positions=new Map([['A',{vid_index:1,currentTime:12}],['B',{vid_index:2,currentTime:36}]]);

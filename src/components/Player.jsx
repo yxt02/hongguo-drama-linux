@@ -71,7 +71,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
 
   // 兼容模式：本机解不了 HEVC 时转码为 H.264
   const autoCompat = true;
-  const [seriesCompat, setSeriesCompat] = useState(false);
+  const [seriesCompat, setSeriesCompat] = useState(true);
+  const defaultCompatRef = useRef(true);
   const seriesCompatRef = useRef({ seriesId: '', enabled: false });
   const [compatMap, setCompatMap] = useState({});         // vidIndex -> 转码后 url
   const [compatProgress, setCompatProgress] = useState(null); // {vidIndex, percent}
@@ -326,6 +327,13 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     setQualityLoading(true);
     window.electronAPI.getSettings().then((settings) => {
       if (!cancelled) {
+        defaultCompatRef.current = settings?.playback_decode_mode !== 'auto';
+        const sid = seriesCompatRef.current.seriesId;
+        if (sid) {
+          const enabled = seriesNeedsCompat(sid, undefined, defaultCompatRef.current);
+          seriesCompatRef.current = { seriesId: sid, enabled };
+          setSeriesCompat(enabled);
+        }
         const quality = settings?.playback_quality ?? settings?.download_quality;
         setDownloadQuality(['1080p', '720p'].includes(quality) ? quality : 'auto');
         setShowDanmakuControls(settings?.show_danmaku_controls !== false);
@@ -943,7 +951,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     const version = ++selectionVersion.current;
     selectedSeriesRef.current = String(sid);
     releasePrefetch();
-    const enabled = seriesNeedsCompat(sid);
+    const enabled = seriesNeedsCompat(sid, undefined, defaultCompatRef.current);
     seriesCompatRef.current = { seriesId: String(sid), enabled };
     setSeriesCompat(enabled);
     fallbackAttemptRef.current = null;
@@ -1195,11 +1203,17 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           <p className="player-download-quality-hint" id="player-download-quality-hint">清晰度用于在线播放、自动缓存和新建下载。自动清理缓存，手动下载单独保留。</p>
           <span className="player-stat">已下载 {playableCount} / {episodes.length || 0} 集</span>
 
-          <span className="player-stat">自动缓存前后各 5 集 · 自动解码</span>
+          <span className="player-stat">自动缓存前后各 5 集 · 默认 H.264 兼容</span>
           {seriesCompat && <button className="btn btn-outline btn-sm" onClick={restoreSeriesDecode}
-            title="本剧后续集数自动使用兼容格式，并提前准备附近集数。点击后恢复自动解码。">
+            title="默认使用 H.264 兼容格式并提前准备附近集数，保持原视频尺寸。点击可将本剧改为自动解码。">
             本剧：兼容解码 · 恢复自动
           </button>}
+          {!seriesCompat && activeSeriesId && <button className="btn btn-outline btn-sm" onClick={() => {
+            rememberSeriesCompat(activeSeriesId, true);
+            seriesCompatRef.current = { seriesId: String(activeSeriesId), enabled: true };
+            setSeriesCompat(true); releasePrefetch();
+            showToast('本剧已使用 H.264 兼容解码');
+          }}>本剧：自动解码 · 使用 H.264</button>}
           {sourceInfo && <span className="player-stat">片源 {sourceInfo.width} × {sourceInfo.height}</span>}
           <button
             aria-pressed={autoNext}
@@ -1245,7 +1259,6 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           </span>
         </div>
         <div className="player-series-actions">
-        <SeasonSwitcher seriesId={activeSeriesId} onSwitch={switchSeason} />
         <button className="btn btn-outline portrait-management-toggle" aria-expanded={portraitActionsOpen}
           aria-controls="player-management" onClick={() => setPortraitActionsOpen((open) => !open)}>管理</button>
         <button
@@ -1259,6 +1272,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         </button>
         </div>
       </div>
+
+      {!actionsHidden && <SeasonSwitcher seriesId={activeSeriesId} onSwitch={switchSeason} />}
 
       {pickerOpen && !actionsHidden && (
         <div className="series-picker">

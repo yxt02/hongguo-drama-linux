@@ -10,10 +10,19 @@ const entries = () => [
   {series_id:'xifan:B',series_title:'归来 第二季'},
   {series_id:'hidden',series_title:'归来 第四季',dismissed:true},
 ];
-for (const [title,base,number] of [['归来 第十二季','归来',12],['归来（第二部）','归来',2],['Return Season 3','Return',3],['Return S4','Return',4],['归来2026','归来2026',null],['归来2','归来2',null]]) {
+for (const [title,base,number] of [['归来 第十二季','归来',12],['归来（第二部）','归来',2],['Return Season 3','Return',3],['Return S4','Return',4],['归来2026','归来2026',null],['归来2','归来',2],['归来一','归来',1],['归来二十一','归来',21],['归来（3）','归来',3],['归来１２','归来',12],['天下第一','天下第一',null],['归来二零二六','归来二零二六',null]]) {
   const info=model.titleInfo(title); assert.equal(info.base,base);assert.equal(info.number,number);
 }
 const initial=entries(), snapshot=JSON.stringify(initial);
+const automatic=model.view(initial,'A',[
+ {series_id:'R',series_title:'归来四'}, {series_id:'S',series_title:'归来5'},
+ {series_id:'other',series_title:'别的剧6'}, {series_id:'xifan:R',series_title:'归来六'},
+ {series_id:'hidden',series_title:'归来第四季'}]);
+assert.deepEqual(automatic.related.map(s=>s.number),[1,2,3,4,5]);
+assert.equal(automatic.related.find(s=>s.series_id==='R').registered,false);
+assert.equal(JSON.stringify(initial),snapshot,'automatic matching never modifies registrations');
+assert.equal(model.view([{series_id:'A',series_title:'归来2'}],'A',[{series_id:'base',series_title:'归来'}]).related[0].number,1);
+
 assert.equal(model.view(initial,'A').linked,false);
 assert.deepEqual(model.view(initial,'A').candidates.map(s=>s.series_id),['B','C']);
 let registry=model.link(initial,'A','B',2);
