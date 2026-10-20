@@ -37,6 +37,7 @@ jobs:
         if: steps.version.outputs.published != 'true'
         run: |
           npm ci --no-audit --no-fund
+          node node_modules/electron/install.js
           curl -fL --retry 3 --max-time 300 -o /tmp/base-bundle.tar.gz https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.6-linux/hongguo-drama-1.74.6-linux-x64.tar.gz
           python3 scripts/restore-linux-media.py /tmp/base-bundle.tar.gz
           node scripts/setup-ffmpeg-linux.js
