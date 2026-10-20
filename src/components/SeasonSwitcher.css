@@ -1,0 +1,16 @@
+.season-switcher { display:flex; gap:8px; align-items:center; position:relative; flex-wrap:wrap; }
+.season-switcher > select { width:auto; max-width:260px; min-width:130px; }
+.season-panel { position:absolute; top:calc(100% + 8px); right:0; z-index:40; width:min(620px,calc(100vw - 48px)); max-height:70vh; overflow:auto; padding:18px; border:1px solid var(--border); border-radius:14px; background:var(--bg-card, var(--bg)); box-shadow:0 12px 40px #0003; }
+.season-panel-heading,.season-form,.season-members li,.season-candidates li { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.season-panel-heading { justify-content:space-between; }
+.season-panel p { font-size:13px; line-height:1.6; margin:10px 0; }
+.season-panel [role=alert] { color:var(--danger,#b92330); }
+.season-form label { display:flex; align-items:center; gap:10px; font-size:13px; }
+.season-form input[type=number] { width:84px; }
+.season-form > input { flex:1; min-width:0; }
+.season-members,.season-candidates { list-style:none; padding:0; margin:10px 0; }
+.season-members li span,.season-candidates li span { flex:1; font-size:13px; overflow-wrap:anywhere; }
+.season-candidates img { width:36px; height:48px; object-fit:cover; border-radius:5px; }
+@media(max-width:760px) { .season-panel { position:fixed; top:15vh; left:16px; right:16px; width:auto; } .season-switcher > select { max-width:190px; } .season-form { flex-wrap:wrap; } }
+.player-series-actions { flex-wrap:wrap; justify-content:flex-end; min-width:0; flex-shrink:1; }
+@media(max-width:1080px) { .player-series-row { flex-wrap:wrap; gap:10px; } .player-series-actions { justify-content:flex-start; } }

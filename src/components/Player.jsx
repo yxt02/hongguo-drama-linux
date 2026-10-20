@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import useDialogKeyboard from './useDialogKeyboard';
+import SeasonSwitcher from './SeasonSwitcher';
 import PlayerControls from './PlayerControls';
 import CommentDanmaku, { useCommentDanmaku } from './CommentDanmaku';
 import { SHORTCUT_ACTIONS, formatShortcut, ignoresPlaybackShortcut, readShortcuts, shortcutKey, subscribeShortcuts } from '../shortcuts';
@@ -976,6 +977,16 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     }
   }, [persistPosition, resetPlayback, loadDetail, showToast, onSeriesSelected, releasePrefetch]);
 
+  const switchSeason = useCallback(async sid => {
+    if (String(sid) === String(activeSeriesId)) return;
+    const version = selectionVersion.current;
+    const saved = await window.electronAPI.getPlaybackPosition(sid);
+    if (version !== selectionVersion.current) return;
+    await loadSeriesList();
+    if (version !== selectionVersion.current) return;
+    await switchSeries(sid, saved?.vid_index || 1, true);
+  }, [activeSeriesId, loadSeriesList, switchSeries]);
+
   // 初次进入与浏览点播共用一次载入，避免两个初始化请求互相覆盖。
   useEffect(() => {
     let cancelled = false;
@@ -1234,6 +1245,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           </span>
         </div>
         <div className="player-series-actions">
+        <SeasonSwitcher seriesId={activeSeriesId} onSwitch={switchSeason} />
         <button className="btn btn-outline portrait-management-toggle" aria-expanded={portraitActionsOpen}
           aria-controls="player-management" onClick={() => setPortraitActionsOpen((open) => !open)}>管理</button>
         <button

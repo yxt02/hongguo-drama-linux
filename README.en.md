@@ -39,7 +39,15 @@
 
 ## Linux Quick Start
 
-### Current highlights · 1.74.6
+### Season switching
+
+In the player, open **关联 / 管理季** (Manage seasons). Confirm the current season number, then search for another season or paste its share link / series ID. Choose a season number and explicitly confirm the association. Use the season dropdown to switch.
+
+Each season keeps its own playback position, episodes, downloads and decoder preference. Switching resumes the selected season, or starts its first playable episode if unwatched. Associations can be renumbered or removed without deleting videos or history. Only seasons from the same provider can be linked. Matching titles are suggestions only; the current sources do not expose reliable official season relationships. Associations remain local to this installation.
+
+### Current highlights · 1.74.7
+
+- **Season switching**: confirmed associations, a season dropdown, and independent resume positions.
 
 - **Matching new icon:** the README, launcher, window, tray and sidebar use the same artwork with transparent outer corners and no white border.
 - **App HD by default:** automatic mode selects the highest available measured resolution. Failures offer retry rather than falling back to low-resolution web streams; actual quality and availability depend on the source.
@@ -287,7 +295,7 @@ credentials and personal file paths from screenshots and logs.
 
 ## Versions and verification
 
-The current Linux release is **1.74.6** (`1.74.6` in source). macOS and Windows releases are maintained upstream. Package and verification records live
+The current Linux release is **1.74.7** (`1.74.7` in source). macOS and Windows releases are maintained upstream. Package and verification records live
 on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
 
 **Linux verification** — all 41 core offline regression scripts pass, including series decoding
@@ -304,6 +312,7 @@ replace testing on every device and network.
 
 | Version | Highlights |
 |---|---|
+| **1.74.7 (Linux)** | Associate multiple seasons, switch from the player dropdown, and resume each season independently |
 | **1.74.6 (Linux)** | New transparent app icon shared by launcher, window, tray, sidebar and README |
 | 1.74.5 (Linux) | Remember series compatibility decoding and preconvert nearby episodes |
 | 1.74.4 (Linux) | Default to App highest quality without web fallback; migrate old web caches |

@@ -2,6 +2,8 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const checks = [
+  "check-season-groups.cjs",
+  "check-season-switcher.cjs",
   "check-playback-cache.cjs",
   "check-playback-media.cjs",
   "check-next-cache.cjs",
@@ -44,11 +46,12 @@ const checks = [
   "check-window-controls.cjs",
   "check-running-app-update.cjs"
 ];
-let failed = 0;
+let failed = 0, skipped = 0;
 for (const file of checks) {
   const result = spawnSync(process.execPath, [path.join(__dirname, file)], { encoding: 'utf8', timeout: 45000 });
   if (result.status !== 0) { failed++; console.error('FAIL ' + file); console.error(result.stdout || '', result.stderr || '', result.error?.message || ''); }
+  else if (/^SKIP /m.test(result.stdout || '')) { skipped++; console.log('SKIP ' + file + ': ' + result.stdout.trim()); }
   else console.log('PASS ' + file);
 }
-console.log((checks.length - failed) + '/' + checks.length + ' playback regression scripts passed');
+console.log((checks.length - failed - skipped) + '/' + (checks.length - skipped) + ' playback regression scripts passed' + (skipped ? ' (' + skipped + ' skipped)' : ''));
 process.exitCode = failed ? 1 : 0;

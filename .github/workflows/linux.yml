@@ -1,0 +1,75 @@
+name: Linux release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['package.json', '.github/workflows/linux.yml']
+permissions:
+  contents: write
+concurrency:
+  group: linux-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Check version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          tag="v${version}-linux"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --json isDraft --jq '.isDraft' > /tmp/is-draft; then
+            if [ "$(cat /tmp/is-draft)" = false ]; then
+              echo "published=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: Install dependencies and restore pinned media
+        if: steps.version.outputs.published != 'true'
+        run: |
+          npm ci --no-audit --no-fund
+          curl -fL --retry 3 --max-time 300 -o /tmp/base-bundle.tar.gz https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.6-linux/hongguo-drama-1.74.6-linux-x64.tar.gz
+          python3 scripts/restore-linux-media.py /tmp/base-bundle.tar.gz
+          node scripts/setup-ffmpeg-linux.js
+      - name: Test and package
+        if: steps.version.outputs.published != 'true'
+        env:
+          HONGGUO_ELECTRON_DIST: ${{ github.workspace }}/node_modules/electron/dist
+        run: |
+          fixture="$RUNNER_TEMP/playback-fixture.mp4"
+          build/ffmpeg/linux-x64/ffmpeg -v error -f lavfi -i testsrc2=size=360x640:rate=24 -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$fixture"
+          export HONGGUO_VIDEO_FIXTURE="$fixture"
+          export HONGGUO_FFMPEG="$PWD/build/ffmpeg/linux-x64/ffmpeg"
+          export HONGGUO_FFPROBE="$PWD/build/ffmpeg/linux-x64/ffprobe"
+          npm run test:playback
+          npm run package:linux
+          node scripts/check-linux-update-bundle.cjs
+      - name: Prepare release files
+        if: steps.version.outputs.published != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git archive --format=zip --output="dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" HEAD
+          cd dist
+          sha256sum "hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "hongguo-drama-${RELEASE_VERSION}-linux-source.zip" > SHA256SUMS.txt
+      - name: Publish after all checks pass
+        if: steps.version.outputs.published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="docs/release-${RELEASE_VERSION}-linux.md"
+          test -f "$notes"
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "Linux v${RELEASE_VERSION} · 多季切换" --notes-file "$notes"
+          gh release upload "$RELEASE_TAG" "dist/hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" dist/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

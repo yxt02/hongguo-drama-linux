@@ -5,6 +5,13 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const u = require('../src/native/linux-update');
 (async()=>{
+  // A host-mounted /proc in a nested PID namespace reports IDs that process.kill
+  // cannot address. This fixture must run with /proc mounted in its own namespace.
+  const status = await fs.readFile('/proc/self/status', 'utf8');
+  if (Number(status.match(/^Pid:\s+(\d+)/m)?.[1]) !== process.pid) {
+    console.log('SKIP process guard: /proc and runtime use different PID namespaces');
+    return;
+  }
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'hongguo-process-test-'));
   const target = path.join(temp, 'selected'), other = path.join(temp, 'other'); const children = [];
   try {

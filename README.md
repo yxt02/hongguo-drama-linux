@@ -29,8 +29,9 @@
 
 > **本仓库维护 Linux 版。** 基于 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 开发，提供 Linux 打包、App 高清取源、解码恢复、缓存管理与一键更新。macOS / Windows 构建由上游提供。
 
-### 当前版本重点 · 1.74.6
+### 当前版本重点 · 1.74.7
 
+- **灵活切季**：播放器内关联其他季，用下拉框切换；每季单独保存观看进度，支持修改季号和解除关联。
 - **统一新版图标**：README、桌面启动器、窗口、托盘和侧栏使用同一图案，外围白边已处理为透明圆角。
 - **默认 App 最高可用画质**：按真实视频尺寸选流；取源失败可重试，不自动切回网页低清源。具体清晰度和可播范围以来源返回为准。
 - **整剧兼容解码**：首次修复成功后记住本剧的解码方式，后续集数直接沿用；前后各五集范围内串行预转码，可恢复自动判断。
@@ -91,7 +92,7 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 > **本 fork 只维护 Linux。** Mac 与 Windows 请到上游
 > [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama/releases) 获取官方构建；本页下方的 Mac/Windows 表格仅为方便而保留上游链接。
 
-**当前正式版：1.74.6**（Linux fork；macOS / Windows 请查看上游版本）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.74.7**（Linux fork；macOS / Windows 请查看上游版本）。媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
 | 设备 | 下载 | 安装方式 |
 |---|---|---|
@@ -157,6 +158,20 @@ Chromium 在自身初始化阶段就决定沙箱模式，早于应用代码，�
 - **播放与下载恢复**：地址失效或传输中断时，有限次刷新取址并尝试备用片源；文件完整并通过校验后才标记下载完成。
 
 弹幕仅展示公开网页提供的部分评论，通常首屏约 15 条，读完不循环；不代表全部评论，也不支持发送或回复。完整改动和验证范围见 [1.6 发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6)。
+
+### 发布构建
+
+Linux 工作流会在 `main` 的版本号更新后运行测试、打包、完整更新包检查，再发布正式版及 SHA256 校验文件；已发布的版本不重复覆盖。也可在 Actions 手动运行。构建复用 1.74.6 正式包中固定校验和的 FFmpeg / FFprobe，避免上游 `latest` 变化导致隐式更换媒体工具。
+
+### 同一部剧切换不同季
+
+在播放器标题旁点击 **关联 / 管理季**，确认当前季号，再搜索其他季，或粘贴分享链接 / 剧集 ID。设好季号后点击 **关联为第 N 季**，即可用 **切换季** 下拉框往返切换。
+
+- 剧库里可能的续季会显示为候选，必须确认后才关联；不会按同名自动合并。
+- 支持关联同一来源的季。不同来源的剧集和自定义来源之间保持独立。
+- 每季保留各自的集数、观看进度、下载文件与解码设置；切换时接着该季上次位置，未看过的季从首个可播集开始。
+- 可以修改季号、解除错误关联；解除只移除关联，不删除视频或观看记录。
+- 当前片源没有提供可靠的官方季关系，因此采用手动确认；关联只保存在本机。
 
 ## 完整功能
 
@@ -350,7 +365,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-本仓库 Linux 版为 **1.74.6**（源码配置版本 `1.74.6`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+本仓库 Linux 版为 **1.74.7**（源码配置版本 `1.74.7`）。Linux 安装包见[本仓库发行页](https://github.com/yxt02/hongguo-drama-linux/releases)，Mac/Windows 的签名公证与验证记录以上游[发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
 **Linux 本版验证**：41/41 个核心回归脚本、完整安装包原位升级验证，以及真实桌面下的托盘加载与关闭行为检查通过。
 
@@ -363,6 +378,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
+| **1.74.7（Linux）** | 新增同剧多季关联、下拉切季及每季独立续播 | [发行说明](docs/release-1.74.7-linux.md) |
 | **1.74.6（Linux）** | 启用红色动漫应用图标，去除外围白边，统一窗口、托盘与侧栏图标 | [发行说明](docs/release-1.74.6-linux.md) |
 | **1.74.5（Linux）** | 按剧记忆兼容解码，后续集数直接沿用，附近集数后台预转码 | [发行说明](docs/release-1.74.5-linux.md) |
 | **1.74.4（Linux）** | 默认 App 最高画质，不自动切网页，迁移旧低清自动缓存；含 App CDN 403 修复 | [发行说明](docs/release-1.74.4-linux.md) |

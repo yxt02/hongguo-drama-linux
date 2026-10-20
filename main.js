@@ -1121,6 +1121,22 @@ ipcMain.handle('search-resolve', async (event, seriesId) => {
   }
 });
 
+// Confirmed season relationships live alongside each series, independent of playback/download IDs.
+ipcMain.handle('get-series-seasons', (_event, seriesId) => {
+  try { return {success:true,data:require('./src/native/season-groups').view(seriesRegistry,String(seriesId))}; }
+  catch(error) { return {success:false,error:error.message}; }
+});
+for (const [channel, operation] of [['link-series-season','link'],['unlink-series-season','unlink']]) {
+  ipcMain.handle(channel, (_event, payload = {}) => {
+    try {
+      const seasons = require('./src/native/season-groups');
+      const next = seasons[operation](seriesRegistry,payload.seriesId,payload.targetSeriesId,payload.seasonNumber);
+      store.saveSeries(next); seriesRegistry = next;
+      return {success:true,data:seasons.view(seriesRegistry,payload.seriesId)};
+    } catch(error) { return {success:false,error:error.message}; }
+  });
+}
+
 // 搜索窗口可见性（超时兜底：让用户自己操作）
 ipcMain.handle('search-window-show', async (event, visible, sourceUrl) => {
   let target;
