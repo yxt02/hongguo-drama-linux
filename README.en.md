@@ -1,424 +1,116 @@
 <p align="center">
-  <img src="docs/images/app-icon-1.74.6.png" alt="Hongguo Short Drama Linux app icon" width="144" height="144">
+  <img src="docs/images/app-icon-1.74.6.png" alt="Hongguo Drama Linux icon" width="132" height="132">
 </p>
 
-<h1 align="center">Hongguo Short Drama · Linux Desktop</h1>
-
+<h1 align="center">Hongguo Drama for Linux</h1>
+<p align="center">Find short dramas, watch on your Linux desktop, and resume where you left off.</p>
+<p align="center"><a href="README.md">中文</a> · <strong>English</strong></p>
 <p align="center">
-  <strong>English</strong> · <a href="README.md">中文</a>
+  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
+  <img alt="Linux x64" src="https://img.shields.io/badge/platform-Linux%20x64-55746b?style=flat-square">
+  <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
 </p>
+<p align="center"><a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><strong>Download for Linux</strong></a> · <a href="https://github.com/yxt02/hongguo-drama-linux/issues">Report an issue</a></p>
 
-<p align="center">App HD sources by default, automatic episode caching, remembered series compatibility decoding, a system tray and one-click updates.</p>
+An independently maintained Linux desktop project by [yxt02](https://github.com/yxt02), with drama search, online playback, local downloads and resume support. Distributed for **Linux x86_64**, with the runtime and FFmpeg included.
 
-<p align="center">
-  <a href="https://github.com/yxt02/hongguo-drama-linux/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/yxt02/hongguo-drama-linux?style=flat-square"></a>
-  <img alt="Linux x64" src="https://img.shields.io/badge/Linux-x64-555555?style=flat-square">
-  <img alt="Updates without uninstalling" src="https://img.shields.io/badge/updates-no_uninstall-55746b?style=flat-square">
-  <a href="LICENSE"><img alt="GPL-3.0 license" src="https://img.shields.io/badge/license-GPL--3.0-555555?style=flat-square"></a>
-</p>
+## Install
 
-<p align="center">
-  <a href="#linux-quick-start"><strong>Linux Quick Start</strong></a> ·
-  <a href="#features">Features</a> ·
-  <a href="#build-from-source">Build from source</a> ·
-  <a href="#faq">FAQ</a> ·
-  <a href="https://github.com/yxt02/hongguo-drama-linux/issues">Report an issue</a>
-</p>
-
-> **What this repo is.** A community-maintained open-source desktop client for three free
-> short-drama sources (Hongguo / Xifan / Hema). It is **not** an official client and carries no
-> endorsement from those platforms. No paid episode unlocking is offered; available series,
-> quality and catalogue depend entirely on the source platforms.
->
-> **This repository is a fork of
-> [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama)** and **only maintains Linux
-> support**. Upstream ships macOS and Windows only; Linux packaging, the Chromium sandbox
-> workaround and the FFmpeg assembly script live here. For Mac and Windows builds, use upstream.
-
----
-
-## Linux Quick Start
-
-### Season switching
-
-The player automatically searches the same provider for matching seasons and displays season buttons below the title. Click to switch, without manually linking first. Trailing Arabic numbers, Chinese numerals, 第几季/第几部, Season N, SＮ, brackets and full-width numbers are supported. Each season keeps its own episodes, playback position, downloads and decoder preference. Unwatched seasons start at the first playable episode.
-
-Title matching is a heuristic, not an official season relationship. Other titles and providers are filtered; duplicate season numbers keep their full titles. Use **修正季信息** to correct nonstandard names manually. Failed background searches can be retried without interrupting playback.
-
-### GitHub search
-
-This repository is a fork. Include `fork:true` in repository searches, e.g. `hongguo linux fork:true` or `红果 linux fork:true`. Topics include `hongguo`, `hongguo-drama`, `linux`, `video-player` and `h264`.
-
-### Current highlights · 1.74.8
-
-- **Automatic season buttons**: detect numbered seasons and switch directly from the title area.
-- **H.264 by default**: prepare a compatible stream before first playback, preserve dimensions and reuse verified caches; individual dramas can opt into automatic decoding.
-
-- **Matching new icon:** the README, launcher, window, tray and sidebar use the same artwork with transparent outer corners and no white border.
-- **App HD by default:** automatic mode selects the highest available measured resolution. Failures offer retry rather than falling back to low-resolution web streams; actual quality and availability depend on the source.
-- **Remembered series decoding:** successful repair enables compatibility playback for subsequent episodes, with serial preconversion inside the ±5-episode window and an option to restore automatic decoding.
-- **Updates and tray:** upgrade and restart in place without uninstalling, and choose whether X quits or minimizes to the tray.
-
-**No Node.js, no system FFmpeg, no flags required.**
-
-1. Download [`hongguo-drama-<version>-linux-x64.tar.gz`](https://github.com/yxt02/hongguo-drama-linux/releases/latest)
-2. Extract it and run the launcher:
+Download `hongguo-drama-<version>-linux-x64.tar.gz` from the [latest release](https://github.com/yxt02/hongguo-drama-linux/releases/latest). Extract it and run the launcher:
 
 ```sh
-tar -xzf hongguo-drama-*-linux-x64.tar.gz
+tar -xzf hongguo-drama-<version>-linux-x64.tar.gz
 cd hongguo-linux-x64
 ./红果短剧.sh
 ```
 
-3. Open **设置 (Settings)** and choose your download directory.
+Run `./install.sh` to add the application menu entry and the `hongguo` command. The default installation lives in `~/.local/opt/hongguo-drama`. No sudo, Node.js or system FFmpeg installation is required.
 
-### Optional: install into the application menu
+Releases also include source and `SHA256SUMS.txt`. With the archive and checksum file in the same directory:
 
 ```sh
-./install.sh              # adds 红果短剧 to your app menu and a `hongguo` command
-./install.sh --uninstall  # removes it again
+sha256sum --ignore-missing -c SHA256SUMS.txt
 ```
 
-Installs entirely under `~/.local` — **no root / sudo needed**.
+## Update in place
 
-### One-click updates (1.74.1+)
+Open **Settings → Check for updates → Update and restart**. The updater verifies SHA256 and the application version, replaces the complete directory after exit, and keeps a `.previous` backup. It restores the old installation on failure. Settings, history and manual downloads outside the application directory are preserved.
 
-Open **设置 → 检测更新 → 一键更新并重启** to check, download, verify and restart
-into the new version with one click. No uninstall is needed. Downloads come from
-this Linux fork, are verified with SHA256 and the embedded app version, and the
-previous installation is kept as a `.previous` backup. Settings, watch history and
-manual downloads outside the application directory are preserved.
+You can also run:
 
-To upgrade an older installation for the first time, run
-`./升级现有安装.sh` from the new extracted bundle. This uses the files already
-extracted, closing only that installation’s old processes, without another download. The default target is
-`~/.local/opt/hongguo-drama`; set `HONGGUO_INSTALL_DIR` for a custom location.
+```sh
+hongguo --update --restart
+```
 
-Afterwards, terminal updates are also available with `hongguo --update --restart`.
-Supported for writable Linux x64 directory bundles; other package formats require
-manual updates.
+For older installations without the updater, extract the latest bundle and run `升级现有安装.sh`. It closes the old application and upgrades using the extracted bundle, without uninstalling or downloading it again.
 
-| Path | What it is |
+In-app updates support writable Linux x64 directory installations. Other package formats, including AppImage, require manual updates from the release page.
+
+## Watching
+
+| Feature | Behavior |
 |---|---|
-| `红果短剧.sh` | **The entry point.** Double-click this or run it from a terminal. |
-| `install.sh` | One-command install into the desktop menu |
-| `app/` | The application itself (contains bundled FFmpeg — do not move it alone) |
-| `使用说明.md` | Chinese usage notes shipped inside the bundle |
+| Discovery | Browse categories, search titles, or paste a share link / series ID |
+| Quality | Prefer the highest available App-source resolution, with explicit 1080p / 720p options |
+| Compatibility | Prepare H.264 before first playback by default |
+| Resume | Keep separate episode and time positions for each drama and season |
+| Automatic cache | Retain the current episode and up to five episodes on each side |
+| Downloads | Keep explicitly downloaded episodes separate from automatic caches |
+| Playback | Auto-next, playback speed, fullscreen and picture controls |
+| Tray | Choose full exit or minimize-to-tray when closing the window |
 
-### Tray and complete quit (1.74.2+)
+Resolution and availability depend on the provider. App-source failures prompt a retry rather than silently falling back to a lower-quality web source. H.264 conversion cannot turn low-resolution footage into HD.
 
-The tray menu offers Show window, Minimize to tray, X-button behavior and Quit.
-Settings → 窗口与托盘 saves the close behavior immediately. X quits by default;
-close-to-tray keeps background work running. Explicit quit and updates wait for
-active writers/transcoders and close hidden search windows. If the tray host is
-unavailable, the window stays accessible. `hongguo --quit` also requests exit.
+## Automatic season buttons
 
-### Why a launcher script instead of running `app/hongguo-downloader` directly?
+Opening a drama starts a background search for other seasons from the same provider. **Buttons below the title** let you switch directly, without linking seasons manually first.
 
-Chromium decides its sandbox mode during its own startup, **before** any application code runs —
-so nothing inside the app can fix it. On Ubuntu 23.10+ AppArmor blocks the user-namespace
-sandbox, and an unprivileged `chrome-sandbox` helper makes Chromium abort immediately.
-
-The launcher detects that combination and adds `--no-sandbox` automatically. On hosts where the
-sandbox works normally, it adds nothing and the default sandbox stays in force. Running the bare
-binary skips that step and will fail on affected systems.
-
-To force the sandbox off regardless:
-
-```sh
-HONGGUO_NO_SANDBOX=1 ./红果短剧.sh
-```
-
-### Getting a Linux build
-
-```sh
-git clone https://github.com/yxt02/hongguo-drama-linux.git
-cd hongguo-drama-linux
-npm ci
-npm run package:linux      # produces dist/hongguo-drama-<version>-linux-x64.tar.gz
-```
-
-| Command | Output |
+| Title ending | Interpretation |
 |---|---|
-| `npm run start:linux` | Run from source (sandbox handled automatically) |
-| `npm run package:linux` | Full bundle: `dist/hongguo-linux-x64/` + `.tar.gz` |
-| `npm run build:linux:dir` | Unpacked app only: `dist/linux-unpacked/` |
-| `npm run build:linux:appimage` | AppImage |
-
----
-
-## Features
-
-| I want to… | What you get |
-|---|---|
-| Find a drama | Unified search across Hongguo, Xifan and Hema; categories, hot rankings, share-link parsing |
-| Keep watching | Online + local playback, resume, auto-next, playback speed, next-episode pre-cache |
-| Download & export | Quality selection, batch download, retry, merge to MP4 |
-| Manage my library | Watch history, local favourites, new-episode reminders, file & cache cleanup |
-| Tune the experience | Landscape/portrait layouts, always-on-top, picture-in-picture, themes, shortcuts, video enhancement |
-| Read comments | Public reviews, per-episode bullet comments (danmaku), local word filter |
-
-<details>
-<summary>Expand feature details and limits</summary>
-
-### 1. Finding dramas: three sources, one search
-
-- **All-sources search** — queries Hongguo, Xifan and Hema at once and labels each result;
-  you can also search a single source. If one source fails, the others still show.
-- **Browse catalogue** — posters, titles, episode counts, genre filters, paging and refresh;
-  details list every episode with its download state.
-- **Hongguo categories & hot rankings** — live-action, motion-comic and AI dramas; four ranking
-  boards (overall, live-action, motion-comic, AI) with the source's own placement and heat.
-- **Hongguo link / ID parsing** — paste a share link or enter a series ID to fetch details, then
-  play or pick episodes to download.
-- **Play straight from details** — no need to download a whole series first.
-- **Flexible episode picking** — single, multi, select all, invert, clear; shortcuts for the first
-  10, first 30, last 30; ranges like `1-30`, `1,3,5`, `1,5,10-20`.
-
-| Source | Implemented | Current limits |
-|---|---|---|
-| Hongguo | Catalogue, genres, four hot boards, search, share-link/ID parsing, play & download available episodes | When the page offers no stream the app tries to resolve one; results still depend on what the source returns. |
-| Xifan | Own catalogue, genres, paging, search, play & download unlocked episodes | Hot rankings not wired up; locked episodes are marked and skipped. |
-| Hema | Official catalogue, genres, forward/back paging, search, full episode list, play & download clearly-free episodes | Paid or unclear episodes stay locked. No unlocking. |
-
-Files are stored per source and series title. "漫画" is a still-image reading format — pick "漫剧"
-for video. Streams, quality and availability depend on the platform; the app promises neither
-fixed 1080p nor a complete series.
-
-### 2. Playback: online, local and continuous
-
-- **Local first** — downloaded episodes play from disk; undownloaded, unlocked episodes try
-  online playback. Double-click an undownloaded episode to queue it.
-- **Basic controls** — click to play/pause, scrub, check time, change volume, mute.
-- **Automatic disk cache** — keep the current episode and up to five episodes on each side.
-  Two background workers prioritize upcoming episodes. Leaving the window cancels old tasks and
-  removes automatic originals and compatibility copies; manual downloads are preserved.
-  Completed files are validated and reused after restart.
-- **Auto-next** — on by default; skips locked episodes and chains local with online episodes.
-- **Resume** — episode and position are saved per series; continue from the library or watch
-  history. Switching pages in the app keeps playback and progress going.
-- **0.25×–4× speed** — 16 steps. The speed readout is a button that steps +0.25×, wrapping to 1×
-  after 4×. The three-dot menu picks a level directly; speed is kept across episodes.
-- **Compatible playback** — H.264 compatibility is the default from the first frame, for both
-  local and online episodes. Conversion keeps the source dimensions and reuses verified
-  compatibility caches. A drama can opt into automatic decoding and remember that choice;
-  decode failure detection still provides automatic H.264 repair in that mode. Progress,
-  cancellation and cache cleanup remain available.
-- **Failure recovery** — cancel preparation, retry the episode, reconnect the source, or try
-  compatibility transcoding. Expired addresses are refreshed a limited number of times; hardware
-  transcode failures fall back to software.
+| `1`, `2`, `3` | Arabic season numbers |
+| `一`, `二`, `三` | Chinese season numbers |
+| `第一季`, `第二部` | Explicit Chinese season / part numbers |
+| `Season 2`, `S3` | English season numbers |
+| `（２）` | Brackets and full-width digits |
 
-Automatic quality prefers App streams ranked by actual resolution, with web fallback when the
-App source is unavailable. Playback, caching and new downloads share the quality choice.
-Unsupported codecs are converted only when needed; software conversion and source-service
-failures can still delay or prevent playback.
+Seasons resume independently. Other titles, providers and dismissed library entries are filtered; duplicate season numbers retain their titles so you can choose the right entry.
 
-### 3. Picture and window
+Matching is based on titles, not an official season relationship. Use **修正季信息** to correct nonstandard names manually. Failed searches can be retried without interrupting playback.
 
-Landscape / portrait layouts with window-size memory, always-on-top, an integrated episode panel
-in portrait, a full-window portrait mode (`Esc` to leave), and per-series picture modes
-(fit / fill / crop / stretch) that remember playback position.
+## H.264 and disk use
 
-### 4. Library, history and downloads
+H.264 compatibility is the default for online and local playback. Conversion preserves source dimensions, reuses valid compatibility caches, and prepares nearby episodes serially. Initial preparation time depends on the source and computer.
 
-Watch history, local favourites and new-episode reminders, a download manager with quality
-selection, batch ops, retry and merge-to-MP4, plus cache cleanup.
-
-### 5. Settings
-
-Download directory and naming, concurrency, proxy with test, theme, shortcuts, video enhancement,
-danmaku options with a local word filter, custom sources (Apple CMS V10 JSON API or direct
-MP4/M3U8), and update reminders.
-
-</details>
-
-## Playback shortcuts
-
-| Key | Action |
-|---|---|
-| `Space` | Play / pause |
-| `←` / `→` | Seek back / forward 5 seconds |
-| `↑` / `↓` | Previous / next episode |
-| `A` | Toggle auto-next |
-| `S` / `D` | Speed down / up by 0.25× |
-| `F` | Toggle fullscreen |
-| `Esc` | Leave portrait full-window, or close the current menu / dialog |
+Use **本剧：兼容解码 → 恢复自动** to switch one drama to automatic decoding. The choice persists, and you can switch back to H.264. Decode failure detection remains available in automatic mode.
 
-These are the defaults and can be rebound in Settings (single key or Shift combos, with conflict
-checks and a reset). Text fields, menus and dialogs never trigger player shortcuts.
+Automatic originals and compatibility copies outside the current ±5-episode window are cleaned up. Manual downloads are retained separately. Cache sizes and cleanup controls are available in the player and settings.
 
-## Screenshots
+## Closing and the tray
 
-![Hongguo Short Drama 1.6: hot picks and public rankings](docs/screenshots/macos-v1.6-hot.jpg)
+Closing the window exits fully by default. **Settings → Window and tray** can change this to minimize-to-tray. The tray menu provides show, minimize and quit actions. If the tray is unavailable, the app keeps its window accessible.
 
-<p align="center"><sub>macOS 1.6 release screenshot of the hot-picks page. Titles and heat values are whatever the public board showed at capture time and change as the source updates.</sub></p>
+Quitting closes background search windows and waits for download writes and transcoding to finish. Use the tray's quit action or `hongguo --quit` before an external upgrade.
 
-## FAQ
+## Troubleshooting
 
-### Why are some episodes locked, failing to load, or in different quality?
+- **Blurry video:** check the actual source resolution. Conversion and picture enhancement cannot recover detail missing from the source.
+- **Missing seasons:** matching depends on provider search results and consistent base titles. Retry or correct the season information manually.
+- **Long conversion:** valid compatibility caches are reused. If the original codec works on your machine, choose automatic decoding for that drama.
+- **Source or download errors:** check the network and proxy settings, then retry. Locked or unavailable content must be handled on the source platform.
+- **Launch problems:** run `红果短剧.sh` from the bundle root. The launcher handles Chromium sandbox compatibility on some distributions.
 
-Streams and availability are decided by the source service. Xifan locked episodes and Hema paid or
-unclear episodes stay locked. The app exposes no unlocking or ad-reward API and promises nothing
-about paid content. Source interfaces change — what worked before may stop working.
+Report reproducible problems in [Issues](https://github.com/yxt02/hongguo-drama-linux/issues), including version, distribution, steps and error messages. Remove personal information before sharing logs.
 
-### Downloads fail, or the catalogue won't load
+## Development and releases
 
-Check your network and the source platform first, then the proxy switch and mode, and lower
-concurrency. Use "retry failed" or reload the catalogue. Black picture with sound now switches to
-H.264 compatibility format automatically (also manually via "转码后播放").
+The current application version is **1.74.8**. Default H.264 and automatic season switching passed 45 playback regression scripts, Linux packaging and a complete in-place upgrade check. See the [release notes](docs/release-1.74.8-linux.md).
 
-### Where are my videos, settings and history?
+Build instructions, pinned media recovery and test setup are in [Linux development](docs/DEVELOPMENT.md). The Linux workflow tests and packages version changes before publishing the archive, source and checksums.
 
-Videos live in the download directory from Settings, organised by source and series title.
-Settings, tasks and watch history default to:
+## Origin and license
 
-- Linux: `~/.config/hongguo-downloader/`
-- macOS: `~/Library/Application Support/hongguo-downloader/`
-- Windows: `%APPDATA%\hongguo-downloader\`
+This project continues development from [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama). Earlier origins and modification notices are recorded in [NOTICE](NOTICE). Independent maintenance preserves the original license and attribution.
 
-If you point the app at a custom profile directory, that location wins. Removing a library entry,
-deleting a task record, deleting videos and clearing the cache are different operations — read the
-confirm dialog.
+Code is licensed under [GPL-3.0](LICENSE). Bundled FFmpeg provenance, licensing and fixed checksums are documented in the [Linux media notice](build/ffmpeg/LINUX-NOTICE.txt) and [third-party notices](THIRD-PARTY-NOTICES.md).
 
-### Why doesn't it auto-install updates?
-
-The app only shows an update reminder and links to the release page; downloading and installing is
-your decision. Disabling reminders or auto-checks leaves older versions working, though source
-service changes can still affect features.
-
-### Does a self-built package get signing and notarisation?
-
-No. macOS builds from source use ad-hoc signing and never request a developer certificate or
-notarisation. Those are separate release steps for the official Mac packages. Windows packages are
-currently unsigned. There is no need to disable Gatekeeper system-wide for this app.
-
-### How do I report a problem?
-
-Open an [Issue](https://github.com/yxt02/hongguo-drama-linux/issues) with the app version, OS and
-CPU, source, steps to reproduce and the error text. Strip account details, cookies, proxy
-credentials and personal file paths from screenshots and logs.
-
-## Versions and verification
-
-The current Linux release is **1.74.8** (`1.74.8` in source). macOS and Windows releases are maintained upstream. Package and verification records live
-on the [releases page](https://github.com/yxt02/hongguo-drama-linux/releases).
-
-**Linux verification** — all 41 core offline regression scripts pass, including series decoding
-memory, source selection, cache windows, playback recovery, cancellation, tray lifecycle and update checks.
-The full Linux archive passed the in-place upgrade check. Native desktop tests verified the packaged
-icon can load into the tray and that both close-to-tray and complete quit work correctly.
-
-**Not covered** — physical Windows 11, all GPUs, physical Intel Macs, clean Gatekeeper environments,
-real-network danmaku on Windows and long-duration playback. Cloud checks and notarisation do not
-replace testing on every device and network.
-
-<details>
-<summary>Release history</summary>
-
-| Version | Highlights |
-|---|---|
-| **1.74.8 (Linux)** | H.264 compatibility by default; detect Arabic/Chinese season numbers and switch from visible season buttons |
-| **1.74.7 (Linux)** | Associate multiple seasons, switch from the player dropdown, and resume each season independently |
-| **1.74.6 (Linux)** | New transparent app icon shared by launcher, window, tray, sidebar and README |
-| 1.74.5 (Linux) | Remember series compatibility decoding and preconvert nearby episodes |
-| 1.74.4 (Linux) | Default to App highest quality without web fallback; migrate old web caches |
-| 1.74.3 (Linux) | Fix App video CDN 403 caused by browser Referer; live 1080p download/decode verified |
-| 1.74.2 (Linux) | Tray menu, configurable X button, complete quit and hidden-search-window cleanup |
-| 1.74.1 (Linux) | One-click verified update and restart, previous-version backup and rollback, no uninstall |
-| 1.74.0 (Linux) | Disk cache within ±5 episodes, high-quality source selection, validated caches and HLS conversion fixes |
-| 1.73.1 (Linux) | Auto-repair black screen with sound (H.264 fallback); transcode-first for undecodable HEVC |
-| 1.73 | Automatic transient download retries (10/30/60s) |
-| 1.72 | Auto-hide landscape controls; safer media-connection reuse |
-| 1.71 | Library download hint placement; hot-picks layout |
-| 1.70 | Download recovery, random picks, custom playback sources |
-| 1.60 | Download quality selection, per-episode danmaku, playback/download recovery |
-| 1.50 | Source compatibility, playback failure recovery |
-| 1.40 | Merge-candidate fixes |
-| 1.30 | Themes, shortcuts, stealth window, public reviews, favourites, video enhancement |
-| 1.20 | Per-series picture mode, update notices |
-
-See the upstream project for the full notes.
-
-</details>
-
-## Build from source
-
-The app is **Electron + React + Node.js**. You need Node.js **≥ 22.12**, npm, `tar`, `ldd`, `git`
-and `curl`. The build scripts do not install system dependencies for you.
-
-### Linux
-
-```sh
-git clone https://github.com/yxt02/hongguo-drama-linux.git
-cd hongguo-drama-linux
-npm ci
-npm run package:linux
-```
-
-`npm run package:linux` validates or fetches the bundled FFmpeg, builds the renderer, packages
-Electron, then assembles the launcher + installer + `tar.gz`.
-
-**FFmpeg on Linux** lives in `build/ffmpeg/linux-x64/` and comes from **BtbN FFmpeg-Builds**
-`n8.1 linux64-gpl` (ships libx264 / libx265), verified by `scripts/setup-ffmpeg-linux.js`:
-
-- archive and binary SHA-256 recorded in `build/ffmpeg/linux-x64/build-manifest.json`;
-- ELF magic and x86-64 machine type checked;
-- `ldd` confirms only system libraries (glibc / libgcc) — a fully static build is also accepted.
-
-Reuse a previously downloaded archive with `FFMPEG_LINUX_ARCHIVE=/path/to.tar.xz`.
-
-> **Why not a smaller fully-static build?** The `johnvansickle.com` 7.0.2 static build is roughly
-> half the size but **segfaults on the app's AES-128 HLS remux path** — a core capability. Size was
-> traded for correctness. See [`build/ffmpeg/LINUX-NOTICE.txt`](build/ffmpeg/LINUX-NOTICE.txt) for
-> the exact reproduction command; please smoke-test it before swapping in any other build.
-
-[FFmpeg provenance, licence and verification](build/ffmpeg/LINUX-NOTICE.txt) ·
-[GPLv3](build/ffmpeg/COPYING.GPLv3) · [LGPLv2.1](build/ffmpeg/COPYING.LGPLv2.1)
-
-FFmpeg binaries are not committed to Git. When redistributing a build, provide the corresponding
-source as GPL requires.
-
-**Run the check suite on Linux:**
-
-```sh
-export FFMPEG=$PWD/build/ffmpeg/linux-x64/ffmpeg
-export FFPROBE=$PWD/build/ffmpeg/linux-x64/ffprobe
-export HONGGUO_FFMPEG=$FFMPEG HONGGUO_FFPROBE=$FFPROBE
-node scripts/check-merge.cjs
-```
-
-Platform-specific checks (`check-ffmpeg-mac`, `check-macos`, `check-windows-release`) print `SKIP`
-and exit 0 on a non-matching platform.
-
-### macOS
-
-```sh
-npm ci
-npm run build:mac
-```
-
-Requires Node.js ≥ 22.12, npm, Apple Command Line Tools, `pkg-config`, `make`, `git`, `curl`.
-Mac builds compile FFmpeg/x264 from pinned, SHA-256-verified source; see
-[MACOS-NOTICE.txt](build/ffmpeg/MACOS-NOTICE.txt). Produces `dist/mac-arm64/红果短剧.app` and the DMG.
-
-### Windows
-
-Build the portable EXE on Windows x64 with matching FFmpeg/FFprobe. Full dependencies, media-tool
-source and commands are in [docs/RELEASING.md](docs/RELEASING.md). Self-built packages are not
-code-signed.
-
-## Upstream, licence and boundary
-
-This project continues upstream's **[GPL-3.0](LICENSE)** licence and keeps its modification and
-provenance notices. See [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-
-**Upstream:** [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) — macOS and
-Windows builds. **This repo:** the Linux port.
-
-The software is offered for learning and research. Do not impersonate the official apps or charge
-for access under a false authorisation. Source-available rights and obligations are governed by
-GPLv3; that invitation is not a licence from the platforms or copyright holders, nor a promise of
-immunity.
-
-**Boundaries the app does not cross:** no DRM, no live streams, no paid episode unlocking. HLS
-handles only public plain and AES-128 playlists. Details: [docs/LINUX-PORT.md](docs/LINUX-PORT.md).
+This is an unofficial Linux client and is not affiliated with Hongguo.
