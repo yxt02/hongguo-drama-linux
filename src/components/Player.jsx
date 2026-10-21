@@ -49,6 +49,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   const [playbackRate, setPlaybackRate] = useState(1);
   const [downloadQuality, setDownloadQuality] = useState('auto');
   const [qualityLoading, setQualityLoading] = useState(true);
+  const [downloadingFollowing, setDownloadingFollowing] = useState(false);
+  const downloadingFollowingRef = useRef(false);
   const [waitingFor, setWaitingFor] = useState(null); // 正在等待下载的集号
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -281,7 +283,10 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       const latest = data?.episodes.find(item => item.vid_index === intent.vidIndex && item.vid === intent.vid);
       if (!latest || latest.locked) throw new Error(latest?.locked ? '该集已锁定，请在来源平台确认' : '无法刷新本集状态，请重试');
       if (usableLocal(latest, intent.seriesId)) { resumeLocal(latest, intent.seekTo, intent.autoplay); return; }
-      throw new Error('自动缓存准备失败，请重试本集或手动选择下载');
+      // No independent local file is available. Keep the original source/transfer
+      // failure instead of inventing a second cache failure for the same attempt.
+      intent.submitting = false;
+      setWaitingFor(null);
     } catch (error) {
       if (!isCurrentFallback(intent)) return;
       intent.submitting = false;
@@ -1097,22 +1102,33 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   };
 
   const downloadMissing = async () => {
-    if (qualityLoading) return;
-    const missing = episodes.filter((e) => !e.locked && e.status !== 'completed');
+    if (qualityLoading || downloadingFollowingRef.current) return;
+    const seriesId = activeSeriesId;
+    const quality = downloadQuality;
+    const afterIndex = Number(currentIndex);
+    const missing = episodes.filter((e) => Number(e.vid_index) > afterIndex && !e.locked
+      && !['completed', 'pending', 'downloading'].includes(e.status))
+      .sort((a, b) => Number(a.vid_index) - Number(b.vid_index));
     if (!missing.length) {
-      showToast('可下载的集数已全部下载');
+      showToast('当前集之后没有待下载的集数（已完成或已在队列中）');
       return;
     }
+    downloadingFollowingRef.current = true;
+    setDownloadingFollowing(true);
     let ok = 0;
+    let added = 0;
     let firstError = '';
     for (const ep of missing) {
       try {
-        const r = await window.electronAPI.downloadSingleEpisode(activeSeriesId, ep.vid_index, downloadQuality);
-        if (r?.success) ok++;
+        const r = await window.electronAPI.downloadSingleEpisode(seriesId, ep.vid_index, quality);
+        if (r?.success) { ok++; added += Number(r.count) || 0; }
         else if (!firstError) firstError = r?.error || '加入下载失败';
       } catch (error) { if (!firstError) firstError = error.message || '加入下载失败'; }
     }
-    showToast(firstError ? `${ok} 集提交成功，${missing.length - ok} 集失败：${firstError}` : `已把 ${ok} 集加入下载队列`);
+    downloadingFollowingRef.current = false;
+    setDownloadingFollowing(false);
+    showToast(firstError ? `${ok} 集提交成功，${missing.length - ok} 集失败：${firstError}`
+      : `当前第 ${afterIndex} 集之后：新增 ${added} 集下载${ok > added ? `，${ok - added} 集已在队列中` : ''}`);
   };
 
   // 一键合并当前这部剧（弹出格式选择）
@@ -1234,9 +1250,10 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
               <option value="720p">720P</option>
             </select>
           </label>
-          <button className="btn btn-outline" onClick={downloadMissing} disabled={qualityLoading}>
+          <button className="btn btn-outline" onClick={downloadMissing} disabled={qualityLoading || downloadingFollowing}
+            title="只下载当前集之后尚未完成且未在队列中的集数；不包含当前集和之前的集数">
             <Download size={15} />
-            下载未完成集
+            {downloadingFollowing ? '正在加入队列…' : '下载后续未完成集'}
           </button>
           <button
             className="btn btn-primary"
@@ -1504,6 +1521,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             {playbackError ? (
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
+                {downloadQuality !== 'auto' && <button className="btn btn-outline" disabled={qualityLoading}
+                  onClick={() => changeQuality('auto')}>改用 App 最高可用画质</button>}
                 {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
                 {fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div></>

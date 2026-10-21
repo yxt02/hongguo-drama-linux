@@ -511,6 +511,14 @@ function sourceFailure(source, error) {
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
   if (code === 'INVALID_RESPONSE' || /空响应|有效数据|目录数据不完整|JSON/.test(message)) return { source, code: 'INVALID_RESPONSE', message: '片源数据无法解析' };
+  if (code === 'QUALITY_UNAVAILABLE') {
+    const dimensions = [error.width, error.height].map(Number);
+    const size = dimensions.every(value => Number.isSafeInteger(value) && value > 0 && value <= 32768)
+      ? `（最高可用兼容片源 ${dimensions[0]}×${dimensions[1]}）` : '';
+    return { source, code, message: `本集片源尺寸不满足所选清晰度${size}，清晰度标签不代表实际尺寸；可手动改用 App 最高可用画质` };
+  }
+  if (code === 'RESOLUTION_UNKNOWN') return { source, code, message: '接口未提供可验证的视频尺寸，无法确认所选清晰度；可手动改用 App 最高可用画质' };
+  if (code === 'UNSUPPORTED_CODEC') return { source, code, message: '本集仅返回暂不支持的编码，没有可用的 H.264/HEVC 片源' };
   return { source, code: 'NO_PLAYABLE_SOURCE', message: '暂未取得有效片源' };
 }
 

@@ -84,6 +84,22 @@ const checks = [
       assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
     }
   }],
+  ['mislabelled 1080p exposes measured dimensions without accepting low-resolution or unsupported streams', async () => {
+    for (const [rows, code, message] of [
+      [{ one: { codec_type: 'bytevc1', width: 640, height: 360, definition: '1080p', main_url: media('low') } }, 'QUALITY_UNAVAILABLE', /640×360/],
+      [{ one: { codec_type: 'h264', definition: '1080p', main_url: media('unknown') } }, 'RESOLUTION_UNKNOWN', /视频尺寸/],
+      [{ one: { codec_type: 'bytevc2', width: 1920, height: 1080, main_url: media('unsupported') } }, 'UNSUPPORTED_CODEC', /暂不支持的编码/],
+      [{}, 'NO_PLAYABLE_SOURCE', /暂未取得有效片源/],
+    ]) {
+      const app = appFixture(rows), f = load('hongguo.js', { './app-source': app });
+      const result = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' });
+      assert.equal(result.url, null); assert.equal(result.sources[0].code, code);
+      assert.match(result.error, message); assert.match(result.error, /1080p，未降级/);
+      assert.equal(app.calls.length, 2, 'strict quality is never retried as automatic');
+    }
+    const auto = await appFixture({ one: { codec_type: 'bytevc1', width: 640, height: 360, definition: '1080p', main_url: media('low') } }).fetchAppPlayUrl('11', { quality: 'auto' });
+    assert.equal(auto.width, 640); assert.equal(auto.height, 360); assert.equal(auto.source, 'app');
+  }],
   ['Web diagnostic keeps null compatibility and safely reports failures without automatic fallback', async () => {
     for (const [failure, expected] of [
       [Object.assign(new Error('secret URL'), { response: { status: 404 } }), 'HTTP_404'],

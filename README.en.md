@@ -55,7 +55,7 @@ In-app updates support writable Linux x64 directory installations. Other package
 | Compatibility | Prepare H.264 before first playback by default |
 | Resume | Keep separate episode and time positions for each drama and season |
 | Automatic cache | Retain the current episode and up to five episodes on each side |
-| Downloads | Keep explicitly downloaded episodes separate from automatic caches |
+| Downloads | Download unfinished episodes after the current one; skip completed, queued and locked episodes |
 | Playback | Auto-next, playback speed, fullscreen and picture controls |
 | Tray | Choose full exit or minimize-to-tray when closing the window |
 
@@ -94,6 +94,7 @@ Quitting closes background search windows and waits for download writes and tran
 ## Troubleshooting
 
 - **Blurry video:** check the actual source resolution. Conversion and picture enhancement cannot recover detail missing from the source.
+- **1080p source unavailable:** some episodes have a 1080p label but report smaller dimensions, such as 640×360. The app explains the mismatch and keeps your selected quality. Click **改用 App 最高可用画质** to explicitly try the highest available App stream. Missing dimensions and unsupported codecs receive separate messages; conversion cannot create a missing HD version.
 - **Missing seasons:** matching depends on provider search results and consistent base titles. Retry or correct the season information manually.
 - **Long conversion:** valid compatibility caches are reused. If the original codec works on your machine, choose automatic decoding for that drama.
 - **Source or download errors:** check the network and proxy settings, then retry. Locked or unavailable content must be handled on the source platform.
@@ -103,7 +104,7 @@ Report reproducible problems in [Issues](https://github.com/yxt02/hongguo-drama-
 
 ## Development and releases
 
-The current application version is **1.74.8**. Default H.264 and automatic season switching passed 45 playback regression scripts, Linux packaging and a complete in-place upgrade check. See the [release notes](docs/release-1.74.8-linux.md).
+The current application version is **1.74.9**, correcting the following-episode download range and source-quality diagnostics. All 46 playback regression scripts, Linux packaging and a complete in-place upgrade check passed. See the [release notes](docs/release-1.74.9-linux.md).
 
 Build instructions, pinned media recovery and test setup are in [Linux development](docs/DEVELOPMENT.md). The Linux workflow tests and packages version changes before publishing the archive, source and checksums.
 

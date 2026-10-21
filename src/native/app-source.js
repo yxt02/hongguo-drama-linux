@@ -250,7 +250,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
     }
     const info = outer?.video_info?.data;
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
-    const rows = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
+    const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
         const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
         const quality = str(item.quality_desc || item.definition || item.height || item.vheight || item.video_meta?.definition);
@@ -259,14 +259,22 @@ async function fetchAppPlayUrl(vid, options = {}) {
         const [width, height] = [[item.vwidth, item.vheight], [item.width, item.height], [meta.vwidth, meta.vheight], [meta.width, meta.height]]
             .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
         return { item, codec, codecRank, quality, pixels, width, height };
-    }).filter(row => row.codecRank < 2 && meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
+    });
+    const compatible = streams.filter(row => row.codecRank < 2);
+    const rows = compatible.filter(row => meetsDownloadQuality(row, requestedQuality)).sort((a, b) => requestedQuality === 'auto'
         ? (options.preferQuality !== false
             ? Math.min(b.width, b.height) - Math.min(a.width, a.height) || b.width * b.height - a.width * a.height || a.codecRank - b.codecRank
             : a.codecRank - b.codecRank || b.pixels - a.pixels)
         : Math.min(a.width, a.height) - Math.min(b.width, b.height) || a.codecRank - b.codecRank);
-    if (!rows.length) throw new Error(requestedQuality === 'auto'
-        ? '本集暂未提供兼容的 H.264/HEVC 片源'
-        : `本集暂无尺寸可确认且满足 ${requestedQuality} 的 H.264/HEVC 片源，未降级下载`);
+    if (!rows.length) {
+        if (!streams.length) throw Object.assign(new Error(`本集未返回可用的视频流（所选清晰度 ${requestedQuality}）`), { code: 'NO_PLAYABLE_SOURCE' });
+        if (!compatible.length) throw Object.assign(new Error(`本集仅返回暂不支持的编码（所选清晰度 ${requestedQuality}）`), { code: 'UNSUPPORTED_CODEC' });
+        const measured = compatible.filter(row => row.width > 0 && row.height > 0)
+            .sort((a, b) => Math.min(b.width, b.height) - Math.min(a.width, a.height));
+        throw Object.assign(new Error(`本集暂无尺寸可确认且满足 ${requestedQuality} 的片源，未降级`), measured.length
+            ? { code: 'QUALITY_UNAVAILABLE', width: measured[0].width, height: measured[0].height }
+            : { code: 'RESOLUTION_UNKNOWN' });
+    }
     let lastError;
     const variants = [];
     const seen = new Set();
