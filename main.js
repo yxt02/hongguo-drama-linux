@@ -295,6 +295,7 @@ async function applyProxyToSession(resolved) {
 /** 统一入口：设置变化或启动时调用 */
 async function applyProxySettings(settings) {
   const resolved = resolveProxyConfig(settings);
+  hongguo.configureNetwork?.({ allowTrustedDns: resolved.mode === 'direct' });
   applyProxyToEnv(resolved);
   await applyProxyToSession(resolved);
   console.log(`[Proxy] mode=${resolved.mode}`);
@@ -1032,8 +1033,29 @@ async function runSniffOnUrl(url, label) {
   return next;
 }
 
-async function runSearchSniff(keyword) {
-  return runSniffOnUrl(`${SEARCH_SITE}/search/${encodeURIComponent(keyword)}`, 'Search');
+async function runSearchSniff(keyword, options = {}) {
+  const deadline = Math.min(Number(options.deadline) || Infinity, Date.now() + 15000);
+  if (Date.now() >= deadline) throw new Error('搜索超时，请稍后重试');
+  let website, websiteError, appResult, appError;
+  try {
+    website = await require('./src/native/hongguo-search').searchHongguo(keyword,
+      { page: options.page || 1, timeout: 5000, retries: 0, deadline });
+    if (website?.success && website.results?.length) return website;
+  } catch (error) { websiteError = error; }
+  try {
+    appResult = await require('./src/native/hongguo-app-search').searchApp(keyword,
+      { page: options.page || 1, cursor: options.cursor, deadline });
+    if (appResult?.success && appResult.results?.length) return appResult;
+  } catch (error) { appError = error; }
+  if (Date.now() < deadline && (options.page || 1) === 1) {
+    try {
+      const results = await require('./src/native/hongguo-app-new').searchNewReleases(keyword, { deadline });
+      if (results.length) return { success: true, results, channel: 'app-new', page: 1, hasMore: false };
+    } catch (_) { /* Preserve a valid empty website result or the original search error. */ }
+  }
+  if (website?.success) return website;
+  if (appResult?.success) return appResult;
+  throw new Error(`红果搜索暂不可用：${websiteError?.message || appError?.message || '请稍后重试'}`);
 }
 
 // ===== 浏览：分类页（含题材筛选与分页）=====
@@ -1091,18 +1113,28 @@ ipcMain.handle('test-custom-source', async (_event,draft) => {
 });
 
 
-ipcMain.handle('browse-list', (_event, options) =>
-  require(String(options?.source).startsWith('custom:') ? './src/native/custom-source' : options?.source === 'hema' ? './src/native/hema'
-    : options?.source === 'xifan' ? './src/native/xifan' : './src/native/catalog').browseList(options));
+ipcMain.handle('browse-list', async (_event, options = {}) => {
+  if (String(options.source).startsWith('custom:')) return require('./src/native/custom-source').browseList(options);
+  if (options.source === 'hema') return require('./src/native/hema').browseList(options);
+  if (options.source === 'xifan') return require('./src/native/xifan').browseList(options);
+  if (options.catalogChannel != null && !['web', 'app'].includes(options.catalogChannel)) return { success: false, error: '目录线路无效' };
+  if (options.catalogChannel !== 'web' && options.category !== 'comic') {
+    const result = await require('./src/native/hongguo-app-catalog').browseList(options);
+    if (result.success || options.catalogChannel === 'app' || options.genre) return result;
+  }
+  // Trusted official DNS is only a direct-mode fallback; respect an explicitly selected proxy.
+  const allowTrustedDns = resolveProxyConfig(getCurrentSettings()).mode === 'direct';
+  return require('./src/native/catalog').browseList({ ...options, allowTrustedDns });
+});
 
 async function searchSeriesForSource(keyword, options = {}) {
   const kw = String(keyword || '').trim();
   if (!kw) return { success: false, error: '请输入搜索关键词' };
   try {
     if (String(options?.source).startsWith('custom:')) return await require('./src/native/custom-source').searchSeries(kw,options);
-    if (options?.source === 'hema') return await require('./src/native/hema').search(kw);
-    if (options?.source === 'xifan') return await require('./src/native/xifan').search(kw);
-    return await runSearchSniff(kw);
+    if (options?.source === 'hema') return await require('./src/native/hema').search(kw, options.page || 1, options);
+    if (options?.source === 'xifan') return await require('./src/native/xifan').search(kw, options.page || 1, options);
+    return await runSearchSniff(kw, options);
   } catch (error) {
     console.error('[Search] 失败:', error.message);
     return { success: false, error: error.message };
@@ -1693,7 +1725,8 @@ ipcMain.handle('get-series-episodes', async (event, seriesId) => {
         return {
           vid: ep.vid,
           vid_index: idx,
-          title: ep.title || '',
+          title: sid.startsWith('xifan:')
+            ? require('./src/native/xifan').episodeDisplayTitle(sid, seriesTitle, ep.title || '') : ep.title || '',
           web_available: ep.web_available ?? null,
           locked: ep.locked === true,
           taskId: t ? t.id : null,
@@ -3256,6 +3289,11 @@ ipcMain.handle('get-download-tasks', () => {
   });
   return sorted.map((task) => {
     const { cancelSource, writer, ...serializableTask } = task;
+    const info = task.hongguoInfo;
+    if (String(info?.series_id).startsWith('xifan:')
+      && require('./src/native/xifan').episodeDisplayTitle(info.series_id, info.series_title, info.ep_title) !== info.ep_title) {
+      serializableTask.title = `《${info.series_title}》第${String(info.vid_index).padStart(3, '0')}集`;
+    }
     if (task.status === 'completed' && !hasCompleteTaskFile(task)) {
       return { ...serializableTask, status: 'failed', progress: 0, error: '本地文件已丢失或路径冲突，请重新下载' };
     }

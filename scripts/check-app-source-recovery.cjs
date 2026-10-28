@@ -1,0 +1,152 @@
+// Offline App playback-source checks: empty 200 responses and automatic quality locking.
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const sourcePath = path.resolve(__dirname, '../src/native/app-source.js');
+const source = fs.readFileSync(sourcePath, 'utf8');
+const vid = '7700946421087751193';
+
+function load(axios, { realDevice = false } = {}) {
+  const module = { exports: {} };
+  const context = vm.createContext({
+    module,
+    exports: module.exports,
+    require(name) {
+      if (name === 'node:crypto') return crypto;
+      if (name === './sm3') return require('../src/native/sm3');
+      if (name === './download-quality') return require('../src/native/download-quality');
+      if (name === './playback-device') return realDevice ? require('../src/native/playback-device')
+        : { getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }) };
+      if (name === 'axios') return axios;
+      return require(name);
+    },
+    Buffer,
+    URL,
+    AbortSignal,
+    setTimeout,
+    clearTimeout,
+    console,
+  });
+  vm.runInContext(source, context, { filename: sourcePath });
+  return module.exports;
+}
+
+function modelResponse(rows) {
+  return {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    data: JSON.stringify({
+      code: 0,
+      data: {
+        [vid]: {
+          video_model: {
+            fallback_api: 'https://api5-normal-sinfonlineb.fqnovel.com/fallback',
+          },
+        },
+      },
+    }),
+  };
+}
+
+function fallbackResponse(rows) {
+  return {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    data: JSON.stringify({ code: 0, video_info: { data: { video_list: rows } } }),
+  };
+}
+
+function row(definition, width, height, suffix) {
+  return {
+    codec_type: 'h264',
+    quality_desc: definition,
+    video_meta: { codec_type: 'h264', definition, vwidth: width, vheight: height },
+    main_url: `https://qznovelvod.com/${suffix}.mp4`,
+    backup_url: `https://fqnovelvod.com/${suffix}-backup.mp4`,
+  };
+}
+
+(async () => {
+  const empty = await load(async () => ({
+    status: 200,
+    headers: { 'content-type': 'application/json', 'x-tt-logid': 'empty-log' },
+    data: '',
+  })).fetchAppPlayUrl(vid, { quality: 'auto' }).then(
+    () => { throw new Error('empty 200 response must fail'); },
+    error => error,
+  );
+  assert.equal(empty.code, 'EMPTY_RESPONSE');
+  assert.match(empty.message, /空响应/);
+
+  let call = 0;
+  const api = load(async () => {
+    call += 1;
+    return call === 1
+      ? modelResponse()
+      : fallbackResponse([row('1080p', 1080, 1920, 'best'), row('720p', 720, 1280, 'lower')]);
+  });
+  const selected = await api.fetchAppPlayUrl(vid, { quality: 'auto' });
+  assert.equal(selected.quality, '1080p');
+  assert.equal(selected.variants.length, 2, 'main and backup URLs for the best rendition only');
+  assert.ok(selected.variants.every(item => item.url.includes('best')), 'auto must not silently fall through to 720p');
+
+  const inlineResponse = (rows, id = vid) => ({ status: 200, headers: {}, data: JSON.stringify({ code: 0,
+    data: { [id]: { video_model: { video_list: rows, fallback_api: 'https://vod.snssdk.com/must-not-fetch' } } } }) });
+  const plain = { ...row('1080p', 1080, 1920, 'inline'), encrypt_info: { encrypt: false } };
+  let inlineCalls = 0;
+  const direct = load(async config => {
+    inlineCalls++;
+    assert.equal(new URL(config.url).searchParams.get('device_id'), '1000000000000001');
+    assert.equal(config.headers['x-medusa'], undefined);
+    assert.equal(config.headers.Cookie, undefined);
+    return inlineResponse([plain]);
+  });
+  assert.equal((await direct.fetchAppPlayUrl(vid)).url, plain.main_url);
+  assert.equal(inlineCalls, 1, 'inline model must not fetch the obsolete fallback endpoint');
+  assert.equal((await direct.fetchAppPlayUrl(vid, { quality: '1080p' })).width, 1080);
+
+  // Encode a synthetic Spade key, so the real decoder is exercised without captured credentials.
+  const keyHex = '0123456789abcdef0123456789abcdef';
+  const raw = Buffer.alloc(34), previous = [246, 85], keyPlain = Buffer.from(`0${keyHex}`);
+  for (let i = 0; i < keyPlain.length; i++) {
+    raw[i + 1] = ((keyPlain[i] + 21 + i.toString(2).split('1').length - 1) & 255) ^ previous[i & 1];
+    previous[i & 1] = raw[i + 1];
+  }
+  raw[0] = 48 ^ raw[1] ^ raw[2];
+  const encrypted = { ...plain, encrypt_info: { encrypt: true, spade_a: raw.toString('base64') } };
+  const keyed = await load(async () => inlineResponse([encrypted])).fetchAppPlayUrl(vid);
+  assert.equal(keyed.contentKey, keyHex);
+  for (const info of [{ encrypt: true }, {}, { encrypt: true, spade_a: 'bad' }]) {
+    await assert.rejects(load(async () => inlineResponse([{ ...plain, encrypt_info: info }])).fetchAppPlayUrl(vid),
+      error => error.code === 'INVALID_RESPONSE');
+  }
+  await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchAppPlayUrl(vid),
+    error => error.code === 'MISSING_MODEL');
+  await assert.rejects(load(async () => inlineResponse([{ ...plain, main_url: 'https://127.0.0.1/private', backup_url: '' }])).fetchAppPlayUrl(vid),
+    error => error.code === 'SECURITY_BLOCKED');
+  let registrations = 0, modelCalls = 0;
+  const registered = load(async config => {
+    if (new URL(config.url).pathname === '/service/2/device_register/') {
+      registrations++;
+      assert.equal(config.method, 'POST');
+      assert.ok(Buffer.isBuffer(config.data));
+      assert.ok(config.timeout > 0 && config.timeout <= 8000);
+      return { status: 200, headers: {}, data: '{"device_id_str":"9007199254740993","install_id_str":"9007199254741993","device_token":"synthetic-unused-token"}' };
+    }
+    modelCalls++;
+    const query = new URL(config.url).searchParams;
+    assert.equal(query.get('device_id'), '9007199254740993');
+    assert.equal(query.get('iid'), '9007199254741993');
+    assert.equal(config.headers.Cookie, undefined);
+    return inlineResponse([plain]);
+  }, { realDevice: true });
+  const simultaneous = await Promise.all([registered.fetchAppPlayUrl(vid), registered.fetchAppPlayUrl(vid)]);
+  assert.equal(registrations, 1, 'real device module and transport must share registration');
+  assert.equal(modelCalls, 2);
+  assert.ok(simultaneous.every(result => result.url === plain.main_url));
+  assert.doesNotMatch(JSON.stringify(simultaneous), /synthetic-unused-token/);
+  console.log('PASS app source recovery: empty response, legacy quality lock, inline URLs/keys and trust boundaries');
+})().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });

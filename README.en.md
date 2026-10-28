@@ -104,7 +104,7 @@ Report reproducible problems in [Issues](https://github.com/yxt02/hongguo-drama-
 
 ## Development and releases
 
-The current application version is **1.74.9**, correcting the following-episode download range and source-quality diagnostics. All 46 playback regression scripts, Linux packaging and a complete in-place upgrade check passed. See the [release notes](docs/release-1.74.9-linux.md).
+The current application version is **1.74.10**, restoring App playback through a shared anonymous device session and current direct video models. Related playback, catalog, search and media fixes were ported from upstream 4.2 while retaining Linux behavior. Validation includes 57 regression scripts, live samples from Hongguo/Hema/Xifan, packaging and a complete in-place upgrade check. See the [release notes](docs/release-1.74.10-linux.md) and [upstream sync record](docs/UPSTREAM_SYNC.md).
 
 Build instructions, pinned media recovery and test setup are in [Linux development](docs/DEVELOPMENT.md). The Linux workflow tests and packages version changes before publishing the archive, source and checksums.
 

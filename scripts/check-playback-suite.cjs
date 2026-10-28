@@ -2,6 +2,17 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const checks = [
+  "../src/native/playback-device.test.cjs",
+  "../src/native/hongguo-search.test.cjs",
+  "../src/native/hongguo-app-search.test.cjs",
+  "../src/native/hongguo-app-new.test.cjs",
+  "check-upstream-source-ipc.cjs",
+  "check-app-catalog.cjs",
+  "check-app-source-recovery.cjs",
+  "check-hls-space.cjs",
+  "check-web-media-guard.cjs",
+  "check-hongguo-identity.cjs",
+  "check-xifan-title-display.cjs",
   "check-following-downloads.cjs",
   "check-default-compat.cjs",
   "check-season-discovery.cjs",

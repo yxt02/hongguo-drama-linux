@@ -64,6 +64,15 @@ x264 是唯一非系统静态依赖（GPLv2-or-later），整体构建为 GPLv3-
 改编自 woshishiq1/drpys，经 N3urda/hongguoTV 的 vendor 源码核对，GPL-3.0。
 完整来源与修改说明见 `src/native/licenses/NOTICE.txt`，许可见同目录 `LICENSE.drpys.txt`。
 
+2026-10-28 从 jackotom/hongguo-drama 的 4.2 源码同步匿名播放会话与直接模型适配。
+匿名注册的 ttEncrypt 和协议字段源自 [tsukiyo-zero/hongguoTV](https://github.com/tsukiyo-zero/hongguoTV) 的
+`388931852ddc614db8b00775a3dc54c5ede6307f`（GPL-3.0-only），其 `DeviceRegister.kt` 注明原始出处为 charlie901208/HGTV。
+注册身份仅在进程内共享，不保存设备令牌、账号或 Cookie。首次取流或 App 搜索会向平台建立匿名会话。
+
+App 目录参数、响应结构和图片 JPEG 变体参考上游及
+[aston314/hongguo-tv](https://github.com/aston314/hongguo-tv/tree/d6a75e3d8e014d50904e24813cb23cff9aa9044c) 的公开实现；不使用固定设备或账号身份。
+本 Linux 分支的同步范围、固定提交与适配说明见 `docs/UPSTREAM_SYNC.md`。
+
 ## 西饭接口参考
 
 独立编写适配器；接口路径核对参考 [Hululu007/drpy-node](https://github.com/Hululu007/drpy-node/tree/295f2b7047e14122d542a7736cb931e81abcf85c)（GPL-3.0）。

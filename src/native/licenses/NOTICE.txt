@@ -14,4 +14,18 @@ Modifications made 2026-10-07: limited playback adapter, local ephemeral
 visitor identifiers, removal of fixed visitor fingerprints, strict response
 and destination validation, supported-codec selection and no secret logging.
 SM3 is implemented locally for Electron runtimes without native SM3 support.
-The existing application remains GPL-3.0.
+The App search request reuses the same signature routines for a GET query
+(hash branch 0 only). This Linux branch enables it as a website-search fallback,
+sharing the registered process-only playback identity. The application remains GPL-3.0.
+
+Anonymous playback registration and inline-model compatibility added 2026-10-27
+reference tsukiyo-zero/hongguoTV, commit
+388931852ddc614db8b00775a3dc54c5ede6307f (GPL-3.0-only):
+https://github.com/tsukiyo-zero/hongguoTV
+DeviceRegister.kt attributes its registration protocol to charlie901208/HGTV,
+feat/phone-login (GPL-3.0-only). playback-device.js adapts its ttEncrypt and
+registration fields using Node crypto/zlib, with no cookies, account login,
+persistent identity or retained device_token. The same in-memory identity is
+shared by all playback requests in one process. Search/catalogue signatures
+remain unchanged. app-source.js also accepts the current inline video_list
+without requesting the legacy fallback endpoint.

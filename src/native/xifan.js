@@ -23,14 +23,17 @@ function httpsUrl(value) {
   } catch (_) { return ''; }
 }
 
-async function request(apiPath, params) {
+async function request(apiPath, params, options = {}) {
+  const remaining = Number(options.deadline) > 0 ? options.deadline - Date.now() : 10000;
+  if (remaining <= 0) throw new Error('西饭加载超时，请重试');
+  const timeout = Math.min(10000, remaining);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const { data } = await axios.get(API + apiPath, {
       params: { ...params, version: 2001001, androidVersionCode: 28 },
       headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-      timeout: 10000, signal: controller.signal, maxRedirects: 0, maxContentLength: 8 * 1024 * 1024,
+      timeout, signal: controller.signal, maxRedirects: 0, maxContentLength: 8 * 1024 * 1024,
     });
     if (data?.ret !== 0 || !data.result || typeof data.result !== 'object') throw new Error('invalid result');
     return data.result;
@@ -85,12 +88,12 @@ async function browseList(options = {}) {
   } catch (error) { return { success: false, error: error.message }; }
 }
 
-async function search(keyword, page = 1) {
+async function search(keyword, page = 1, options = {}) {
   try {
     const kw = String(keyword || '').trim();
     if (!kw) throw new Error('请输入搜索关键词');
     const pg = Math.max(1, Number.parseInt(page, 10) || 1);
-    return normalizeList(await request('/xifan/search/getSearchList', { keyword: kw, pageIndex: pg }), pg);
+    return normalizeList(await request('/xifan/search/getSearchList', { keyword: kw, pageIndex: pg }, options), pg);
   } catch (error) { return { success: false, error: error.message }; }
 }
 
@@ -103,13 +106,24 @@ async function detail(seriesId) {
   return result;
 }
 
+// Only exact, verified upstream metadata conflicts. Do not infer a conflict from a
+// title that merely looks like another drama; false positives hide legitimate episode names.
+const VERIFIED_TITLE_CONFLICTS = new Map([
+  ['xifan:jiuzhou:253\u0000天龙战神', new Set(['爱归良辰'])],
+]);
+
+function episodeDisplayTitle(seriesId, seriesTitle, title) {
+  const blocked = VERIFIED_TITLE_CONFLICTS.get(`${seriesId}\u0000${seriesTitle}`);
+  return blocked?.has(title) ? '' : title;
+}
+
 async function fetchEpisodeList(seriesId) {
   const result = await detail(seriesId);
   const series_title = plainText(result.title) || '未命名短剧';
   const cover = httpsUrl(result.coverImageUrl);
   const episodes = result.episodeList.filter(episode => ID.test(String(episode.episodeId || ''))).map(episode => ({
     vid: `${seriesId}:${episode.episodeId}`, vid_index: Number(episode.index) || 0,
-    title: plainText(episode.title), series_id: seriesId, series_title, cover,
+    title: episodeDisplayTitle(seriesId, series_title, plainText(episode.title)), series_id: seriesId, series_title, cover,
     locked: episode.unlock !== true, source: 'xifan',
   })).sort((a, b) => a.vid_index - b.vid_index);
   if (!episodes.length) throw new Error('西饭分集列表为空');
@@ -132,4 +146,4 @@ async function fetchPlayUrlSingle(vid, sid) {
   } catch (error) { return { url: null, spadeA: null, codec: null, source: 'xifan', error: error.message }; }
 }
 
-module.exports = { browseList, search, fetchEpisodeList, fetchPlayUrlSingle };
+module.exports = { browseList, search, fetchEpisodeList, fetchPlayUrlSingle, episodeDisplayTitle };

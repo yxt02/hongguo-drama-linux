@@ -23,17 +23,20 @@ function parseId(value, episode = false) {
   return { bookId: parts[1], chapterId: parts[2], seriesId: parts.slice(0, 2).join(':') };
 }
 
-async function request(apiPath, body) {
+async function request(apiPath, body, options = {}) {
+  const remaining = Number(options.deadline) > 0 ? options.deadline - Date.now() : 10000;
+  if (remaining <= 0) throw new Error('河马加载超时，请重试');
+  const timeout = Math.min(10000, remaining);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
-  const options = {
+  const timer = setTimeout(() => controller.abort(), timeout);
+  const requestOptions = {
     headers: { 'User-Agent': 'Mozilla/5.0', Accept: body ? 'application/json' : 'text/html',
       'Content-Type': 'application/json', pname: 'www.kuaikaw.cn', Origin: ORIGIN, Referer: `${ORIGIN}/` },
-    timeout: 10000, signal: controller.signal, maxRedirects: 0, maxContentLength: 8 * 1024 * 1024,
+    timeout, signal: controller.signal, maxRedirects: 0, maxContentLength: 8 * 1024 * 1024,
     responseType: body ? 'json' : 'text',
   };
   try {
-    const response = body ? await axios.post(ORIGIN + apiPath, body, options) : await axios.get(ORIGIN + apiPath, options);
+    const response = body ? await axios.post(ORIGIN + apiPath, body, requestOptions) : await axios.get(ORIGIN + apiPath, requestOptions);
     return response.data;
   } catch (error) {
     throw new Error(controller.signal.aborted || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'
@@ -99,12 +102,12 @@ async function browseList(options = {}) {
   } catch (error) { return { success: false, error: error.message }; }
 }
 
-async function search(keyword, page = 1) {
+async function search(keyword, page = 1, options = {}) {
   try {
     const kw = String(keyword || '').trim();
     if (!kw) throw new Error('请输入搜索关键词');
     const pg = Math.max(1, Number.parseInt(page, 10) || 1);
-    const response = await request('/seo/video/6007', { sourceType: 1, keyword: kw, index: pg });
+    const response = await request('/seo/video/6007', { sourceType: 1, keyword: kw, index: pg }, options);
     if (response?.retCode !== 0 || !Array.isArray(response.data?.bookList)) throw new Error('河马搜索数据异常，请稍后重试');
     const data = response.data;
     const results = normalizeBooks(data.bookList);

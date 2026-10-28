@@ -2,10 +2,11 @@
 // Signing and Spade algorithms adapted from woshishiq1/drpys
 // commit 22261adfa31435e3b3ef5a730b8a2a75bcaf1715, spider/js/红果果[短].js,
 // via N3urda/hongguoTV eea73e6a45569a2cbbb9440f7cd5290c459b0b70.
-// Changes: per-request synthetic IDs; no captured device identity; pure JS SM3;
+// Changes: registered in-memory playback identity; pure JS SM3;
 // bounded HTTPS transport; exact episode matching; supported codec selection.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
+const { getPlaybackDevice } = require('./playback-device');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
@@ -13,6 +14,9 @@ const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
+const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
+const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
+const SEARCH_UA = 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
 const DEVICE = {
     ac: 'wifi', channel: 'update_64', aid: '8662', app_name: 'novelread',
     version_code: '71332', version_name: '7.1.3.32', device_platform: 'android', os: 'android',
@@ -124,21 +128,85 @@ function helios(khronos) {
 }
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
-function signedVideoRequest(payload) {
-    // Keep the request's synthetic identity consistent across URL and signature.
-    const device = { ...DEVICE, iid: localId(), device_id: localId() };
-    const khronos = Math.floor(Date.now() / 1000); const body = Buffer.from(payload); const ticketBase = Date.now(); let requestTicket = ticketBase; let query = ''; let url = '';
-    // branch 1 的签名变体服务端不认：抖动 _rticket 找一个可用的 branch（最多试 32 秒偏移）
-    for (let offset = 0; offset < 32; offset += 1) { requestTicket = ticketBase + offset; const values = { ...device, ts: String(khronos), _rticket: String(requestTicket) }; query = pythonUrlEncode(values); url = `${VIDEO_API}?${query}`; if (branchOf(url, body, khronos) !== 1) break; }
-    const random = Math.floor(Math.random() * 65536); const headers = {
-        'User-Agent': VIDEO_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf', 'Content-Type': 'application/json; charset=UTF-8',
-        'x-xs-from-web': '0', 'x-ss-req-ticket': String(requestTicket), 'x-tt-request-tag': 't=0;n=0', 'sdk-version': '2', 'passport-sdk-version': '50561',
-        'x-vc-bdturing-sdk-version': '3.7.2.cn', 'x-ss-stub': md5(body), 'x-gorgon': xGorgon(query, body, khronos, random),
-        'x-khronos': String(khronos), 'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
-        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, device), 'x-tt-dt': '',
+function playbackRequest(payload, identity) {
+    // Registered identity alone is sufficient for this endpoint; keep search signing separate.
+    const query = pythonUrlEncode({ ...DEVICE, ...identity, _rticket: String(Date.now()) });
+    return { url: `${VIDEO_API}?${query}`, body: Buffer.from(payload), headers: {
+        'User-Agent': PLAYBACK_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf',
+        'Content-Type': 'application/json; charset=UTF-8',
+    } };
+}
+function parseSearchInteger(value) {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) return null;
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+function signedSearchRequest({ keyword, page = 1, cursor = null, identity } = {}) {
+    const pg = parseSearchInteger(page);
+    if (pg === null || pg < 1 || pg > 50) throw Object.assign(new Error('App 搜索页码需为 1 至 50 的整数'), { code: 'APP_INPUT' });
+    if (![identity?.device_id, identity?.iid].every(value => typeof value === 'string' && /^\d{1,30}$/.test(value) && /[1-9]/.test(value))
+        || typeof identity?.cdid !== 'string' || !/^[a-f0-9-]{36}$/i.test(identity.cdid)) {
+        throw Object.assign(new Error('App 搜索设备身份无效'), { code: 'APP_INPUT' });
+    }
+    // Search uses the hongguoTV 7.2.2.32 profile and only hash branch 0.
+    const device = { ...DEVICE, version_code: '72232', version_name: '7.2.2.32', manifest_version_code: '72232',
+        update_version_code: '72232', pv_player: '72232', iid: identity.iid, device_id: identity.device_id, cdid: identity.cdid };
+    const khronos = Math.floor(Date.now() / 1000), ticketBase = Date.now();
+    const base = { ...device, query: String(keyword || '').slice(0, 80), count: '20', tab_type: '11',
+        bookshelf_search_plan: '4', use_correct: 'true', user_is_login: '0' };
+    if (cursor?.search_id) base.search_id = cursor.search_id;
+    if (cursor?.passback) base.passback = cursor.passback;
+    const offset = parseSearchInteger(cursor?.next_offset) ?? (pg - 1) * 20;
+    base.offset = String(offset);
+    let requestTicket = ticketBase, query = '', url = '';
+    for (let n = 0; n < 128; n += 1) {
+        requestTicket = ticketBase + n;
+        query = pythonUrlEncode({ ...base, ts: String(khronos), _rticket: String(requestTicket) });
+        url = `${SEARCH_API}?${query}`;
+        if (branchOf(url, null, khronos) === 0) break;
+        if (n === 127) throw new Error('无法生成搜索请求签名');
+    }
+    const random = Math.floor(Math.random() * 65536);
+    const headers = {
+        'User-Agent': SEARCH_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf',
+        'x-ss-req-ticket': String(requestTicket), 'x-tt-request-tag': 't=0;n=0', 'sdk-version': '2',
+        'passport-sdk-version': '50561', 'x-xs-from-web': '0', 'x-khronos': String(khronos),
+        'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
+        'x-gorgon': xGorgon(query, null, khronos, random), 'x-helios': helios(khronos),
+        'x-medusa': buildMedusa(url, null, khronos, device), 'x-tt-dt': '',
     };
+    return { url, headers };
+}
+
+// Catalogue cursors belong to one anonymous identity; keep it in memory for this process only.
+const metadataDevice = { ...DEVICE, version_code: '73532', version_name: '7.3.5.32', manifest_version_code: '73532',
+    update_version_code: '73532', pv_player: '73532', iid: localId(), device_id: localId() };
+function signedMetadataRequest(apiPath, values = {}, payload = null) {
+    if (!['/reading/distribution/category/landpage/v/', '/reading/bookapi/bookmall/cell/change/v'].includes(apiPath)) {
+        throw new Error('不支持的 App 目录接口');
+    }
+    const body = payload === null ? null : Buffer.from(JSON.stringify(payload));
+    const khronos = Math.floor(Date.now() / 1000), ticketBase = Date.now();
+    let query, url, requestTicket;
+    for (let n = 0; n < 128; n += 1) {
+        requestTicket = ticketBase + n;
+        query = pythonUrlEncode({ ...values, ...metadataDevice, ts: String(khronos), _rticket: String(requestTicket) });
+        url = `https://api5-normal-sinfonlineb.fqnovel.com${apiPath}?${query}`;
+        if (branchOf(url, body, khronos) === 0) break;
+        if (n === 127) throw new Error('无法生成 App 目录请求签名');
+    }
+    const headers = {
+        'User-Agent': VIDEO_UA.replace('71332', '73532'), Accept: 'application/json', 'Accept-Encoding': 'identity',
+        'x-xs-from-web': '0', 'sdk-version': '2', 'x-ss-dp': '8662', 'x-tt-store-region': 'cn', 'x-tt-store-region-src': 'did',
+        'x-ss-req-ticket': String(requestTicket), 'x-khronos': String(khronos),
+        'x-gorgon': xGorgon(query, body, khronos, Math.floor(Math.random() * 65536)),
+        'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
+        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, metadataDevice), 'x-tt-dt': '',
+    };
+    if (body) { headers['Content-Type'] = 'application/json; charset=utf-8'; headers['x-ss-stub'] = md5(body); }
     return { url, headers, body };
 }
+
 function parseFallback(value) {
     if (typeof value === 'string') { const parsed = jsonBody(value); return parsed?.fallback_api || value; }
     if (Array.isArray(value)) return str(value[0]);
@@ -219,6 +287,9 @@ async function requestJson(url, options, deadline, signal) {
             continue;
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
+        if (typeof response.data === 'string' && !response.data.trim()) {
+            throw Object.assign(new Error('App 接口返回空响应，请重启应用以重新建立匿名播放会话'), { code: 'EMPTY_RESPONSE' });
+        }
         const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
         return parsed;
@@ -230,25 +301,30 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const requestedQuality = normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
+    const identity = await getPlaybackDevice(requestJson);
     const deadline = Date.now() + 12000;
     const signal = AbortSignal.timeout(12000);
     const payload = JSON.stringify({
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': [vid] },
     });
-    const signed = signedVideoRequest(payload);
+    const signed = playbackRequest(payload, identity);
     const response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
     if (!model) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
-    const fallback = parseFallback(model.fallback_api);
-    if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-    const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
-    if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
-        throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
+    const inline = model.video_list && typeof model.video_list === 'object' && Object.keys(model.video_list).length > 0;
+    let info = model;
+    if (!inline) {
+        const fallback = parseFallback(model.fallback_api);
+        if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
+        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
+        if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
+            throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
+        }
+        info = outer?.video_info?.data;
     }
-    const info = outer?.video_info?.data;
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
     const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
@@ -278,9 +354,19 @@ async function fetchAppPlayUrl(vid, options = {}) {
     let lastError;
     const variants = [];
     const seen = new Set();
-    for (const selected of rows) {
+    // Keep the highest resolution in auto mode; alternate CDNs/codecs may not lower it.
+    const best = rows[0];
+    const selectedRows = requestedQuality === 'auto'
+        ? rows.filter(row => best.width && best.height
+            ? Math.min(row.width, row.height) === Math.min(best.width, best.height) && row.width * row.height === best.width * best.height
+            : row.pixels === best.pixels)
+        : rows;
+    for (const selected of selectedRows) {
         try {
             const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
+            if (inline && !spade && ![false, 0, '0', 'false'].includes(selected.item.encrypt_info?.encrypt)) {
+                throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
+            }
             const key = spade ? deriveContentKey(spade) : null;
             for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
                 if (typeof candidate !== 'string' || !candidate) continue;
@@ -295,7 +381,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
                     seen.add(identity);
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         // App video CDN rejects browser Referer headers (HTTP 403).
-                        userAgent: VIDEO_UA, omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
+                        userAgent: inline ? PLAYBACK_UA : VIDEO_UA, omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         width: selected.width, height: selected.height });
                 } catch (error) { lastError = error; }
             }
@@ -306,4 +392,4 @@ async function fetchAppPlayUrl(vid, options = {}) {
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });
 }
 
-module.exports = { fetchAppPlayUrl };
+module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };

@@ -1,11 +1,12 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
 const axios = require('axios');
 const { webMediaRequestOptions } = require('./web-media-guard');
+const diskJobs = new Set();
+const DISK_RESERVE = 512 * 1024 * 1024;
 
 async function requestHls(url, { signal, headers }) {
   return axios({ url, method:'GET', responseType:'stream', timeout:30000,
@@ -13,11 +14,13 @@ async function requestHls(url, { signal, headers }) {
 }
 
 // The bundled FFmpeg has no HTTP transport: stage guarded HLS resources on disk and allow local protocols only.
-async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = requestHls, checkAccess = () => {}, headers = {}, onProgress }) {
+async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = requestHls, checkAccess = () => {}, headers = {}, onProgress, tempCapacityBytes }) {
   if (!ffmpeg) throw new Error('未找到 FFmpeg，无法准备 HLS 视频');
   webMediaRequestOptions(url);
   const controller = new AbortController(), files = new Map();
-  let temporary, child, failure, killed, killTimer, received = 0, lastProgress = 0;
+  let temporary, child, failure, killed, killTimer, spaceTimer, diskJob, writer;
+  let received = 0, lastProgress = 0, stagedBytes = 0, committedBytes = 0, remuxing = false;
+  const capacityBytes = Number.isFinite(tempCapacityBytes) && tempCapacityBytes >= 0 ? tempCapacityBytes : Infinity;
   const stopChild = () => {
     if (!child || killed) return;
     killed = true; child.kill('SIGTERM'); killTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
@@ -28,6 +31,13 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
     if (signal?.aborted || cancelToken?.reason) abort();
     if (failure) throw failure;
     checkAccess();
+  };
+  const ensureCapacity = extra => {
+    if (stagedBytes + extra > capacityBytes) throw new Error('HLS 暂存空间不足，已停止');
+    const stat = fs.statfsSync(temporary), free = Number(stat.bsize) * Number(stat.bavail);
+    const needed = [...diskJobs].filter(job => job.device === diskJob.device)
+      .reduce((sum, job) => sum + job.remaining(job === diskJob ? extra : 0), DISK_RESERVE);
+    if (!Number.isFinite(free) || free < needed) throw new Error('HLS 暂存或输出空间不足，已停止');
   };
   signal?.addEventListener('abort', abort, { once:true }); cancelToken?.subscribe(abort);
   const deadline = setTimeout(() => fail(new Error('HLS 准备超时，请重试')), 10 * 60 * 1000);
@@ -46,13 +56,16 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
       if (upstream.status !== 200) throw new Error('HLS 媒体请求失败或内容不完整');
       const type = String(upstream.headers['content-type'] || '');
       if (playlist || /mpegurl/i.test(type)) {
-        let text = '', bytes = 0;
+        const parts = [];
+        let bytes = 0;
         for await (const chunk of upstream.data) {
           check(); bytes += chunk.length;
           if (bytes > 2 * 1024 * 1024) throw new Error('HLS 清单过大');
-          text += chunk.toString('utf8');
+          // Decode only after the whole manifest is buffered: UTF-8 characters may span chunks.
+          parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
         if (Number(upstream.headers['content-length']) && bytes !== Number(upstream.headers['content-length'])) throw new Error('HLS 清单下载不完整');
+        const text = Buffer.concat(parts).toString('utf8');
         if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('无效 HLS 清单');
         if (/#EXTINF:/.test(text) && !/#EXT-X-ENDLIST/.test(text)) throw new Error('暂不支持未结束的直播清单');
         const base = upstream.request?.res?.responseUrl || upstream.url || remote;
@@ -85,15 +98,22 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
           }
           rewritten.push(result);
         }
-        await fsp.writeFile(local,rewritten.join('\n'),{mode:0o600});
+        const manifest = rewritten.join('\n'), size = Buffer.byteLength(manifest);
+        ensureCapacity(size); stagedBytes += size;
+        await fsp.writeFile(local,manifest,{mode:0o600});
+        committedBytes = stagedBytes;
       } else {
         if (/text\/html|application\/json/i.test(type)) throw new Error('HLS 分片返回了错误页面');
         let bytes = 0;
         upstream.data.on('data',chunk => {
-          bytes += chunk.length; received += chunk.length;
+          try { ensureCapacity(chunk.length); }
+          catch (error) { fail(error); upstream.data.destroy(error); return; }
+          stagedBytes += chunk.length; bytes += chunk.length; received += chunk.length;
           if (Date.now()-lastProgress >= 150) { onProgress?.(received); lastProgress = Date.now(); }
         });
-        await pipeline(upstream.data,fs.createWriteStream(local,{mode:0o600}),{signal:controller.signal});
+        writer = fs.createWriteStream(local,{mode:0o600});
+        await pipeline(upstream.data,writer,{signal:controller.signal});
+        committedBytes = stagedBytes; writer = null;
         if (!bytes || (Number(upstream.headers['content-length']) && bytes !== Number(upstream.headers['content-length']))) throw new Error('HLS 分片下载不完整');
         onProgress?.(received);
       }
@@ -101,9 +121,25 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
     } finally { upstream?.data?.destroy(); }
   };
   try {
-    check(); temporary = await fsp.mkdtemp(path.join(os.tmpdir(),'hongguo-hls-'));
-    const input = await stage(url,true);
     check();
+    // Keep input and output on one device so all HLS jobs share its capacity reservation.
+    const outputDir = path.dirname(output);
+    await fsp.mkdir(outputDir, { recursive: true });
+    temporary = await fsp.mkdtemp(path.join(outputDir, '.hongguo-hls-'));
+    diskJob = { device: fs.statSync(temporary).dev, remaining(extra = 0) {
+      const pending = Math.max(0, stagedBytes - committedBytes - (writer?.bytesWritten || 0));
+      let outputBytes = 0;
+      if (remuxing) { try { outputBytes = fs.statSync(output).size; } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+      // Actual free space already excludes written bytes; reserve only queued writes and the remaining MP4.
+      return pending + extra + Math.max(0, Math.ceil((stagedBytes + extra) * 1.1) + 1024 * 1024 - outputBytes);
+    } };
+    diskJobs.add(diskJob);
+    if (!(capacityBytes > 0)) throw new Error('HLS 暂存空间不足');
+    ensureCapacity(0);
+    const input = await stage(url,true);
+    check(); ensureCapacity(0);
+    remuxing = true;
+    spaceTimer = setInterval(() => { try { ensureCapacity(0); } catch (error) { fail(error); } }, 1000);
     await new Promise((resolve,reject) => {
       child = spawn(ffmpeg,['-v','error','-nostdin','-y','-protocol_whitelist','file,crypto','-allowed_extensions','ALL',
         '-i',input,'-map','0:v:0','-map','0:a?','-c','copy','-movflags','+faststart','-f','mp4',output],
@@ -119,9 +155,10 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
     try { fs.unlinkSync(output); } catch (_) {}
     throw failure || error;
   } finally {
-    clearTimeout(deadline); clearTimeout(killTimer);
+    clearTimeout(deadline); clearTimeout(killTimer); clearInterval(spaceTimer);
     signal?.removeEventListener('abort',abort); cancelToken?.unsubscribe(abort); controller.abort();
-    if (temporary) await fsp.rm(temporary,{recursive:true,force:true});
+    try { if (temporary) await fsp.rm(temporary,{recursive:true,force:true}); }
+    finally { diskJobs.delete(diskJob); }
   }
 }
 module.exports = { remuxHls };

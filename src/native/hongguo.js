@@ -4,17 +4,20 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('node:url');
 const { normalizeDownloadQuality } = require('./download-quality');
-const { isPublicMediaUrl } = require('./web-media-guard');
+const { isPublicMediaUrl, webMediaRequestOptions } = require('./web-media-guard');
 
 const API = "https://api5-normal-sinfonlineb.fqnovel.com";
 const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
-// 官网提供搜索和完整分集 ID；播放与下载默认使用 App 最高可用画质。
-// 网页可播集数仅是元数据，不限制 App 逐集取源。
+// 官网用于目录、分享和分集身份；播放与下载保持 App 高清优先，不自动切换网页低清。
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
+let trustedOfficialDnsAllowed = false;
+function configureNetwork({ allowTrustedDns = false } = {}) {
+  trustedOfficialDnsAllowed = allowTrustedDns === true;
+}
 
 const COMMON_QUERY = {
   ...Object.fromEntries([
@@ -71,18 +74,31 @@ const DETAIL_BIZ_PARAM = {
   use_server_dns: false,
 };
 
+const MODEL_BIZ_PARAM = {
+  detail_page_version: 0,
+  device_level: 3,
+  disable_digg_stat: false,
+  need_all_video_definition: true,
+  need_mp4_align: false,
+  use_os_player: false,
+  use_server_dns: false,
+  video_platform: 1024,
+};
+
 /**
  * API 调用封装
  */
-async function apiCall(apiPath, body, retries = 3, timeout = 25000) {
+async function apiCall(apiPath, body, retries = 3, timeout = 25000, deadline = 0) {
   const q = { ...COMMON_QUERY, _rticket: Date.now().toString() };
   for (let i = 0; i < retries; i++) {
+    const remaining = deadline ? deadline - Date.now() : timeout;
+    if (remaining <= 0) throw new Error('请求超时');
     const signal = {}; // 供错误信息回溯（HTTP 状态 / 字节数 / CDN logid）
     try {
       const res = await axios.post(API + apiPath, body, {
         params: q,
         headers: HEADERS,
-        timeout,
+        timeout: Math.min(timeout, remaining),
         // 200 + 空 body 时 axios 会解析成 ''，这里统一按原始字节处理便于判断
         responseType: 'arraybuffer',
         transformResponse: [(d) => d],
@@ -99,6 +115,7 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000) {
         const err = new Error(
           `接口返回空响应（HTTP 200，0 字节）${signal.logid ? ' logid=' + signal.logid : ''}`
         );
+        err.code = 'EMPTY_RESPONSE';
         err.emptyResponse = true;
         err.detail = signal;
         throw err;
@@ -112,11 +129,22 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000) {
         throw err;
       }
     } catch (err) {
-      if (err.emptyResponse || i === retries - 1) {
+      if (i === retries - 1) {
         if (err.detail === undefined) err.detail = signal;
         throw err;
       }
-      await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+      // A 200 with no body has no transient payload. Retrying the same request
+      // only adds latency and misleading status text.
+      if (err.emptyResponse) {
+        if (err.detail === undefined) err.detail = signal;
+        throw err;
+      }
+      const wait = 2000 * (i + 1);
+      if (deadline && Date.now() + wait >= deadline) {
+        if (err.detail === undefined) err.detail = signal;
+        throw err;
+      }
+      await new Promise(r => setTimeout(r, wait));
     }
   }
 }
@@ -125,6 +153,15 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000) {
 
 const responseCache = new Map();
 const pendingRequests = new Map();
+const failedWebMedia = new Map();
+
+/** A real media GET failed; keep retries off that episode's web CDN briefly. */
+function markWebMediaFailure(playInfo) {
+  if (playInfo?.source !== 'web' || !playInfo.vid) return;
+  failedWebMedia.set(String(playInfo.vid), Date.now() + 5 * 60 * 1000);
+  if (failedWebMedia.size > 128) failedWebMedia.delete(failedWebMedia.keys().next().value);
+}
+
 /** 仅保留短期成功结果；重复点击共享请求，失败后立即允许重试。 */
 async function cachedRequest(key, ttl, load, { force = false } = {}) {
   const cached = responseCache.get(key);
@@ -155,15 +192,18 @@ function normalizeVideoUrl(raw) {
     .replace(/[?&]$/, '');
 }
 
-/** 从响应体里安全地取出某个字符串字段 */
-function pickJsonString(text, key) {
-  const m = text.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]*)"'));
-  return m ? m[1].replace(/\\u002F/g, '/').replace(/\\u0026/g, '&') : '';
-}
-
 /** 拉取官网页面 HTML */
-async function fetchSiteHtml(url, timeout = 30000) {
+async function fetchSiteHtml(url, timeout = 30000, signal, { trustedOfficialDns = false } = {}) {
+  let guarded = {};
+  if (trustedOfficialDns) {
+    try {
+      if (new URL(url).origin === SITE_ORIGIN) {
+        guarded = { ...webMediaRequestOptions(url, { trustedOfficialDns: true }), adapter: 'http' };
+      }
+    } catch (_) { /* a malformed URL is rejected by axios below */ }
+  }
   const res = await axios.get(url, {
+    ...guarded,
     headers: {
       'User-Agent': WEB_UA,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -173,6 +213,7 @@ async function fetchSiteHtml(url, timeout = 30000) {
     timeout,
     responseType: 'text',
     maxRedirects: 5,
+    signal,
   });
   return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
 }
@@ -181,22 +222,30 @@ async function fetchSiteHtml(url, timeout = 30000) {
  * 从官网 player 页内嵌 JSON 取完整分集列表
  * vid_list 按下标即集数顺序（下标 i → 第 i+1 集）
  */
-async function fetchEpisodeListFromWeb(seriesId) {
-  const html = await fetchSiteHtml(`${SITE_ORIGIN}/player/${encodeURIComponent(seriesId)}`);
-
-  const m = html.match(/"vid_list"\s*:\s*\[([^\]]*)\]/);
-  if (!m) throw new Error('官网页面未找到分集数据（vid_list）');
-
-  const vids = m[1]
-    .split(',')
-    .map((s) => s.trim().replace(/^"|"$/g, ''))
-    .filter((s) => /^\d+$/.test(s));
+function parseEpisodeListHtml(html, seriesId) {
+  const router = require('./catalog').readRouterData(html);
+  const data = router.loaderData?.['player_(series_id)/page']
+    ?? router.loaderData?.['player_(series_id)/(vid)/page']
+    ?? router.loaderData?.detail_page;
+  const detail = data?.seriesDetail;
+  // Read identity and episodes from the same current-player object, never recommendations.
+  if (!data || data.isSuccess === false || !/^\d{1,30}$/.test(String(detail?.series_id || '')) ||
+      String(detail.series_id) !== String(seriesId) ||
+      (data.series_id != null && String(data.series_id) !== String(seriesId))) {
+    throw new Error('官网返回的剧集与请求不一致或缺少剧集身份');
+  }
+  if (!Array.isArray(detail.vid_list)) throw new Error('官网页面未找到分集数据（vid_list）');
+  const vids = detail.vid_list.map(String);
+  if (vids.some(vid => !/^\d{1,30}$/.test(vid)) || new Set(vids).size !== vids.length) {
+    throw new Error('官网分集数据异常');
+  }
   if (!vids.length) throw new Error('官网分集列表为空');
 
-  const seriesTitle = pickJsonString(html, 'series_name') || '未命名短剧';
-  const cover = pickJsonString(html, 'series_cover');
-  const accessible = html.match(/"accessible_episode_cnt"\s*:\s*(\d+)/);
-  const webAccessibleEpisodes = accessible ? Math.min(Number(accessible[1]), vids.length) : null;
+  const seriesTitle = typeof detail.series_name === 'string' ? detail.series_name : '未命名短剧';
+  const cover = typeof detail.series_cover === 'string' ? detail.series_cover : '';
+  const accessible = detail.accessible_episode_cnt;
+  const webAccessibleEpisodes = accessible != null && /^\d+$/.test(String(accessible))
+    ? Math.min(Number(accessible), vids.length) : null;
 
   const episodes = vids.map((vid, i) => ({
     vid,
@@ -243,22 +292,27 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure) {
           (sid && actualSid !== String(sid)) || String(data.seriesDetail?.series_id) !== actualSid ||
           data.publicVideoSeo?.available !== true || String(data.publicVideoSeo.itemId) !== String(vid) ||
           String(data.publicVideoSeo.seriesId) !== actualSid) continue;
+      // Protected pages expose a short SEO preview even when metadata claims the full duration.
+      if (data.protectedPlayback === true) { lastErr = { code: 'PREVIEW_ONLY' }; break; }
       // Bind media to the current player, never a recommended video's URL elsewhere in the page.
-      const matchesPlayer = value => {
+      const matchesPlayer = (value, videoUrl) => {
         try {
           const target = new URL(value);
           return target.origin === SITE_ORIGIN && !target.username && !target.password &&
-            target.pathname === `/player/${actualSid}/${String(vid)}`;
+            (target.pathname === `/player/${actualSid}/${String(vid)}` ||
+              // The current canonical page omits vid; its official media path must still identify this episode.
+              target.pathname === `/player/${actualSid}` && videoUrl.origin === SITE_ORIGIN &&
+                videoUrl.pathname.startsWith(`/video/public/${String(vid)}/`));
         } catch (_) { return false; }
       };
       for (const script of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
         if (!/\btype\s*=\s*["']application\/ld\+json["']/i.test(script[1])) continue;
         let video;
         try { video = JSON.parse(script[2]); } catch (_) { continue; }
-        if (video?.['@type'] !== 'VideoObject' || !matchesPlayer(video.url) ||
-            (video['@id'] && !matchesPlayer(video['@id']))) continue;
+        if (video?.['@type'] !== 'VideoObject') continue;
         let videoUrl;
         try { videoUrl = new URL(normalizeVideoUrl(video.contentUrl)); } catch (_) { continue; }
+        if (!matchesPlayer(video.url, videoUrl) || (video['@id'] && !matchesPlayer(video['@id'], videoUrl))) continue;
         if (!isPublicMediaUrl(videoUrl.href)) { lastErr = { code: 'SECURITY_BLOCKED' }; continue; }
         return { url: videoUrl.href, spadeA: null, codec: '', source: 'web', vid: String(vid), userAgent: WEB_UA, referer: WEB_REFERER };
       }
@@ -285,7 +339,27 @@ function shareHttpUrl(value, base) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.href.length > 4096) {
     throw new Error('仅支持不含账号密码的 HTTP 或 HTTPS 分享链接');
   }
+  if (!isPublicMediaUrl(url.href)) throw new Error('分享链接必须指向公网 HTTP 或 HTTPS 地址');
   return url.href;
+}
+
+/** 直接从分享 URL 里取剧集编号；取到就不需要再发网络请求。 */
+function seriesIdFromShareUrl(value) {
+  let url;
+  try { url = new URL(value); } catch (_) { return ''; }
+  const direct = url.searchParams.get('video_series_id') || url.searchParams.get('series_id');
+  if (/^\d{1,30}$/.test(direct || '')) return direct;
+  const player = url.pathname.match(/^\/player\/(\d{1,30})(?:\/|$)/);
+  if (player) return player[1];
+  const scheme = url.searchParams.get('schemeParams');
+  if (scheme) {
+    try {
+      const raw = decodeURIComponent(scheme);
+      const match = raw.match(/"video_id"\s*:\s*"(\d{1,30})"/);
+      if (match) return match[1];
+    } catch (_) { /* 可选参数损坏时继续走页面解析 */ }
+  }
+  return '';
 }
 
 async function resolveSeriesId(shareUrl) {
@@ -297,15 +371,23 @@ async function resolveSeriesId(shareUrl) {
     return trimmed.toLowerCase();
   }
   if (/^\d{1,30}$/.test(trimmed)) return trimmed;
-  const link = trimmed.match(/https?:\/\/[^\s<>"'，。！？；、【】（）]+/i)?.[0];
-  if (!link) throw new Error('请输入有效的 HTTP 或 HTTPS 分享链接，或剧集 ID');
-  let finalUrl = shareHttpUrl(link.replace(/[),.;!]+$/, ''));
+  const linkPattern = /https?:\/\/[^\s<>"'，。！？；、【】（）]+/gi;
+  // An explicit ID outside URLs is local input; attached links need not be visited or validated.
+  const textId = trimmed.replace(linkPattern, ' ').match(/(?:^|[^A-Za-z0-9_])(?:video_)?series_id["']?\s*[:=]\s*["']?(\d{1,30})(?![A-Za-z0-9_])/i)?.[1];
+  if (textId) return textId;
+  const link = trimmed.match(linkPattern)?.[0];
+  let finalUrl = link ? shareHttpUrl(link.replace(/[),.;!]+$/, '')) : '';
+  // Decode URL values separately so encoded digits cannot be truncated by the text matcher.
+  const initialId = finalUrl ? seriesIdFromShareUrl(finalUrl) : '';
+  if (initialId) return initialId;
+  if (!finalUrl) throw new Error('请输入有效的 HTTP 或 HTTPS 分享链接，或剧集 ID');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   let bodyText;
   try {
     for (let redirects = 0; ; redirects++) {
       const res = await axios.get(finalUrl, {
+        ...webMediaRequestOptions(finalUrl),
         headers: { 'User-Agent': WEB_UA },
         adapter: 'http',
         timeout: 25000,
@@ -321,28 +403,22 @@ async function resolveSeriesId(shareUrl) {
       if (res.status >= 300 && res.status < 400) {
         if (redirects >= 5) throw new Error('分享链接跳转次数过多');
         finalUrl = shareHttpUrl(res.headers.location, finalUrl);
+        const redirectId = seriesIdFromShareUrl(finalUrl);
+        if (redirectId) return redirectId;
         continue;
       }
       bodyText = typeof res.data === 'string' ? res.data : '';
       break;
     }
-  } catch (_) {
-    throw new Error(controller.signal.aborted ? '分享链接加载超时，请重试' : '分享链接加载失败，请检查链接后重试');
+  } catch (error) {
+    const reason = controller.signal.aborted
+      ? '分享链接加载超时，请重试'
+      : `分享链接加载失败：${error.message || '请检查链接后重试'}`;
+    throw new Error(reason);
   } finally { clearTimeout(timer); }
 
-  const url = new URL(finalUrl);
-  const seriesId = url.searchParams.get('video_series_id');
-  if (/^\d{1,30}$/.test(seriesId || '')) return seriesId;
-  const player = url.pathname.match(/^\/player\/(\d{1,30})(?:\/|$)/);
-  if (player) return player[1];
-  const schemeParams = url.searchParams.get('schemeParams');
-  if (schemeParams) {
-    try {
-      const raw = decodeURIComponent(schemeParams);
-      const match = raw.match(/"video_id"\s*:\s*"(\d{1,30})"/);
-      if (match) return match[1];
-    } catch (_) { /* Malformed optional parameters must not hide valid page data. */ }
-  }
+  const urlId = seriesIdFromShareUrl(finalUrl);
+  if (urlId) return urlId;
   const match = bodyText.match(/video_series_id=(\d{1,30})(?!\d)/)
     || bodyText.match(/"(?:video_id|series_id)"\s*:\s*"(\d{1,30})"/);
   if (match) return match[1];
@@ -352,17 +428,73 @@ async function resolveSeriesId(shareUrl) {
 /**
  * 获取全集剧集列表
  */
-async function fetchEpisodeList(seriesId) {
+async function fetchEpisodeList(seriesId, options = {}) {
   if (String(seriesId).startsWith('custom:')) return require('./custom-source').fetchEpisodeList(seriesId);
   if (String(seriesId).startsWith('hema:')) return require('./hema').fetchEpisodeList(seriesId);
   if (String(seriesId).startsWith('xifan:')) return require('./xifan').fetchEpisodeList(seriesId);
-  return cachedRequest(`episodes:${seriesId}`, 60000, () => fetchEpisodeListFresh(seriesId));
+  return cachedRequest(`episodes:${seriesId}`, 60000,
+    () => fetchEpisodeListFresh(seriesId, { deadline: Number(options.deadline) || 0 }),
+    { force: options.force === true });
 }
 
-async function fetchEpisodeListFresh(seriesId) {
+function describeWebLoadError(error) {
+  const message = String(error?.message || '');
+  if (error?.code === 'ERR_CANCELED' || /aborted|canceled|timeout|ECONNABORTED|ETIMEDOUT/i.test(message)) {
+    return '加载超时或连接中断';
+  }
+  return message || '加载失败';
+}
+
+async function fetchEpisodeListFromWeb(seriesId, deadline = 0) {
+  // Some /player pages are served from a broken CDN edge (hang then abort), while the
+  // detail route for the same series is healthy. Race both; parse whichever is valid.
+  const id = String(seriesId);
+  const race = async (timeout, trustedOfficialDns) => {
+    const budget = deadline ? Math.min(timeout, deadline - Date.now()) : timeout;
+    if (budget <= 0) throw new Error('加载超时或连接中断');
+    const controller = new AbortController();
+    const attempts = [
+      () => fetchSiteHtml(`${SITE_ORIGIN}/player/${encodeURIComponent(id)}`, budget, controller.signal, { trustedOfficialDns }),
+      () => fetchSiteHtml(`${SITE_ORIGIN}/detail?series_id=${encodeURIComponent(id)}`, budget, controller.signal, { trustedOfficialDns }),
+    ].map(run => run().then(html => parseEpisodeListHtml(html, id)));
+    attempts.forEach(promise => promise.catch(() => {}));
+    try { return await Promise.any(attempts); }
+    catch (aggregate) { throw aggregate.errors?.[0] || aggregate; }
+    finally { controller.abort(); }
+  };
+  // A healthy page normally returns in well under a second. Do not leave the user
+  // staring at a hung CDN edge for eight seconds; retry on fresh connections sooner.
+  let firstValue = null;
+  let firstError = null;
+  const first = race(1500, trustedOfficialDnsAllowed).then(value => {
+    firstValue = value; return value;
+  }, error => {
+    firstError = error; throw error;
+  });
+  const hedge = (async () => {
+    // Give the first attempt a short head start. A hung CDN edge usually reveals
+    // itself within this window; a healthy page has already returned by then.
+    const wait = deadline ? Math.min(600, Math.max(0, deadline - Date.now())) : 600;
+    await new Promise(resolve => setTimeout(resolve, wait));
+    if (firstValue) return firstValue; // the first attempt won; do not add traffic
+    if (deadline && Date.now() >= deadline) throw new Error('加载超时或连接中断');
+    // Keep trusted DNS for speed, but also retry the ordinary resolver so a blocked
+    // DoH endpoint cannot take the whole episode list down.
+    return Promise.any([race(3500, trustedOfficialDnsAllowed),
+      ...(trustedOfficialDnsAllowed ? [race(3500, false)] : [])]);
+  })();
+  try { return await Promise.any([first, hedge]); }
+  catch (aggregate) {
+    const nested = (aggregate.errors || [aggregate]).flatMap(error => error?.errors || [error]);
+    const second = nested.find(error => error !== firstError) || nested[0] || aggregate;
+    throw new Error(`${describeWebLoadError(firstError)}；重试失败：${describeWebLoadError(second)}`);
+  }
+}
+
+async function fetchEpisodeListFresh(seriesId, { deadline = 0 } = {}) {
   let webError;
   try {
-    return await fetchEpisodeListFromWeb(seriesId);
+    return await fetchEpisodeListFromWeb(seriesId, deadline);
   } catch (error) {
     webError = error;
   }
@@ -373,7 +505,7 @@ async function fetchEpisodeListFresh(seriesId) {
   };
   let j;
   try {
-    j = await apiCall("/novel/player/multi_video_detail/preload/v1", body);
+    j = await apiCall("/novel/player/multi_video_detail/preload/v1", body, 3, 25000, deadline);
   } catch (e) {
     throw new Error(`获取分集失败：官网数据源（${webError.message}），备用接口（${e.message}）`);
   }
@@ -381,12 +513,20 @@ async function fetchEpisodeListFresh(seriesId) {
     throw new Error("detail API 失败: " + JSON.stringify(j || {}).slice(0, 200));
   }
   const d = j.data || {};
-  const sid = Object.keys(d)[0];
+  const requested = String(seriesId);
+  // Never take the first key from an object: a mismatched response must fail closed.
+  const sid = Object.prototype.hasOwnProperty.call(d, requested) ? requested : '';
   if (!sid) {
-    throw new Error("未获取到剧集数据");
+    throw new Error("备用接口返回的剧集与请求不一致");
   }
   const vd = d[sid]?.video_data || {};
+  if (vd.series_id && String(vd.series_id) !== sid) {
+    throw new Error("备用接口返回的剧集与请求不一致");
+  }
   const vl = vd.video_list || [];
+  if (vl.some(item => item?.series_id && String(item.series_id) !== sid)) {
+    throw new Error("备用接口返回了其他剧集的分集");
+  }
   const eps = vl.map((item) => ({
     vid: String(item.vid),
     vid_index: item.vid_index || 0,
@@ -423,13 +563,14 @@ function streamScore(v) {
   }
   const w = parseInt(meta.vwidth, 10) || 0;
   const h = parseInt(meta.vheight, 10) || 0;
+  if (w > 0 && h > 0) defNum = Math.min(w, h);
   const bitrate = parseInt(meta.bitrate || meta.real_bitrate, 10) || 0;
   return { defNum, pixels: w * h, bitrate };
 }
 
 /**
  * 解析单个 video_model JSON
- * 选流优先级：H.264 兼容性 > 清晰度标签 > 像素 > 码率
+ * 选流优先级：H.264 兼容性 > 短边分辨率（无尺寸时用标签） > 像素 > 码率
  */
 function parseModelVideo(vm) {
   if (typeof vm !== 'string') return [null, null, null];
@@ -508,6 +649,9 @@ function sourceFailure(source, error) {
   if (code === 'SECURITY_BLOCKED' || code.startsWith('ERR_WEB_MEDIA_')) return { source, code: 'SECURITY_BLOCKED', message: '片源地址被安全校验阻止' };
   if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
+  if (code === 'EMPTY_RESPONSE') return { source, code, message: '播放接口返回空响应，请重启应用重新建立匿名播放会话' };
+  if (code === 'DEVICE_REGISTRATION_FAILED') return { source, code, message: '匿名播放会话建立失败，请检查网络或重启应用后重试' };
+  if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
   if (code === 'INVALID_RESPONSE' || /空响应|有效数据|目录数据不完整|JSON/.test(message)) return { source, code: 'INVALID_RESPONSE', message: '片源数据无法解析' };
@@ -530,9 +674,6 @@ function unavailableSources(sources, quality = 'auto') {
   return error;
 }
 
-/**
- * FFmpeg 兼容 Base64 解码
- */
 function avBase64Decode(s) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const table = {};
@@ -729,28 +870,29 @@ function rebuildMoov(data, moovOff, moovSize, top) {
         let esize = data.readUInt32BE(p);
         const etyp = data.subarray(p + 4, p + 8).toString('latin1');
         if (etyp === 'encv' || etyp === 'enca') {
-          const newType = etyp === 'encv' ? 'hvc1' : 'mp4a';
           const hdrSize = etyp === 'encv' ? 78 : 28;
+          const children = parseBoxes(data, p + 8 + hdrSize, p + esize);
+          let newType = 'mp4a';
+          if (etyp === 'encv') {
+            const sinf = children.find(child => child.typ === 'sinf');
+            const frma = sinf && parseBoxes(data, sinf.off + sinf.hdr, sinf.off + sinf.size).find(child => child.typ === 'frma');
+            const original = frma && frma.size === frma.hdr + 4
+              ? data.toString('latin1', frma.off + frma.hdr, frma.off + frma.hdr + 4) : null;
+            const avc = children.some(child => child.typ === 'avcC');
+            const hevc = children.some(child => child.typ === 'hvcC');
+            newType = original || (avc && !hevc ? 'avc1' : hevc && !avc ? 'hvc1' : null);
+            if (!['avc1', 'avc3', 'hvc1', 'hev1'].includes(newType)
+              || (newType.startsWith('avc') ? !avc || hevc : !hevc || avc)) {
+              throw new Error('无法确定加密视频的原始编码（codec），请更换片源重试。');
+            }
+          }
           const entry = Buffer.alloc(8 + hdrSize);
           entry.writeUInt32BE(0, 0);
           entry.write(newType, 4, 4, 'latin1');
           data.copy(entry, 8, p + 8, p + 8 + hdrSize);
 
-          let entryExtra = Buffer.alloc(0);
-          let q = p + 8 + hdrSize;
-          while (q + 8 <= p + esize) {
-            let s2 = data.readUInt32BE(q);
-            const t2 = data.subarray(q + 4, q + 8).toString('latin1');
-            if (s2 === 1) {
-              s2 = Number(data.readBigUInt64BE(q + 8));
-            } else if (s2 === 0) {
-              s2 = p + esize - q;
-            }
-            if (t2 !== 'sinf') {
-              entryExtra = Buffer.concat([entryExtra, data.subarray(q, q + s2)]);
-            }
-            q += s2;
-          }
+          const entryExtra = Buffer.concat(children.filter(child => child.typ !== 'sinf')
+            .map(child => data.subarray(child.off, child.off + child.size)));
           const fullEntry = Buffer.concat([entry, entryExtra]);
           fullEntry.writeUInt32BE(fullEntry.length, 0);
           entries.push(fullEntry);
@@ -944,6 +1086,7 @@ function decryptMp4File(srcPath, dstPath, key) {
 }
 
 module.exports = {
+  configureNetwork,
   resolveSeriesId,
   fetchEpisodeList,
   fetchEpisodeListFromWeb,
@@ -956,4 +1099,5 @@ module.exports = {
   UA,
   WEB_UA,
   WEB_REFERER,
+  markWebMediaFailure,
 };

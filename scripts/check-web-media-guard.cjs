@@ -45,11 +45,11 @@ function provider(mediaUrl) {
   vm.runInNewContext(fs.readFileSync(nativePath, 'utf8'), context);
   return context.module.exports;
 }
-function guardWithDns(addresses, answer = '8.8.8.8') {
+function guardWithDns(addresses, answer = '8.8.8.8', resolver) {
   const context = { module: { exports: {} }, URL, setTimeout, clearTimeout,
     require: n => n === 'node:dns' ? { lookup: (_host, _options, callback) => callback(null, addresses) }
-      : n === 'node:https' ? { ...req(n), get: (url, options, callback) => {
-        assert.equal(url, 'https://1.1.1.1/dns-query?name=hongguoduanju.com&type=A');
+      : n === 'node:https' ? { ...req(n), get: resolver || ((url, options, callback) => {
+        assert.ok(['https://1.1.1.1/dns-query', 'https://223.5.5.5/resolve'].includes(url.split('?')[0]));
         const request = new EventEmitter();
         request.destroy = error => { if (error) request.emit('error', error); request.emit('close'); };
         process.nextTick(() => {
@@ -59,7 +59,7 @@ function guardWithDns(addresses, answer = '8.8.8.8') {
           response.emit('end'); request.emit('close');
         });
         return request;
-      } } : req(n) };
+      }) } : req(n) };
   vm.runInNewContext(fs.readFileSync(guardPath, 'utf8'), context);
   return context.module.exports;
 }
@@ -77,6 +77,31 @@ function loopbackAfterGuard(options) {
   return options;
 }
 const checks = [
+  ['catalog trusted DNS is opt-in, origin-bound and isolated from ordinary sockets', async () => {
+    const guard = guardWithDns([{ address: '9.9.9.9', family: 4 }]);
+    const lookup = options => new Promise((resolve, reject) => options.lookup('hongguoduanju.com', { all: true },
+      (error, addresses) => error ? reject(error) : resolve(addresses)));
+    const normal = guard.webMediaRequestOptions('https://hongguoduanju.com/rank/hot-drama');
+    const trusted = guard.webMediaRequestOptions('https://hongguoduanju.com/rank/hot-drama', { trustedOfficialDns: true });
+    assert.equal((await lookup(normal))[0].address, '9.9.9.9');
+    assert.equal((await lookup(trusted))[0].address, '8.8.8.8', 'trusted route must bypass even a public system-DNS answer');
+    assert.notEqual(trusted.httpsAgent, normal.httpsAgent, 'a warm ordinary socket must not defeat the independent DNS route');
+    assert.equal(normal.proxy, undefined, 'existing media requests retain configured proxy behavior');
+    assert.equal(trusted.proxy, false, 'explicit trusted catalog route must remain direct');
+    for (const url of ['http://hongguoduanju.com/a', 'https://hongguoduanju.com:444/a', 'https://other.example/a']) {
+      assert.throws(() => guard.webMediaRequestOptions(url, { trustedOfficialDns: true }), /公网/);
+    }
+  }],
+  ['catalog trusted DNS still rejects private redirect destinations and their DNS answers', async () => {
+    const guard = guardWithDns([{ address: '127.0.0.1', family: 4 }]);
+    const options = guard.webMediaRequestOptions('https://hongguoduanju.com/rank/hot-drama', { trustedOfficialDns: true });
+    assert.throws(() => options.beforeRedirect({}, { headers: { location: 'http://127.0.0.1/private' } },
+      { url: 'https://hongguoduanju.com/rank/hot-drama' }), /公网/);
+    options.beforeRedirect({}, { headers: { location: 'https://other.example/rank' } },
+      { url: 'https://hongguoduanju.com/rank/hot-drama' });
+    await assert.rejects(new Promise((resolve, reject) => options.lookup('other.example', { all: true },
+      (error, addresses) => error ? reject(error) : resolve(addresses))), /公网/);
+  }],
   ['guarded Range requests reuse validated sockets without global agents', async () => {
     const axios = req('axios'), guard = guardWithDns([{ address: '8.8.8.8', family: 4 }]);
     const connections = new Set();
@@ -162,19 +187,82 @@ const checks = [
     guard.beforeRedirect({}, { headers: { location: 'http://hongguoduanju.com/b' } }, { url: 'https://hongguoduanju.com/a' });
     await assert.rejects(lookup(guard, 'hongguoduanju.com'), /公网/);
   }],
+  ['official secure DNS survives an unavailable or hanging resolver and cancels the loser', async () => {
+    for (const hanging of [false, true]) {
+      const calls = [], requests = [];
+      const guard = guardWithDns([{ address: '198.18.14.190', family: 4 }], undefined, (url, options, callback) => {
+        calls.push(url);
+        assert.equal(options.rejectUnauthorized, undefined, 'TLS certificate verification must stay enabled');
+        assert.equal(options.lookup, undefined, 'fixed resolver IP must not use local DNS');
+        const request = new EventEmitter(); requests.push(request);
+        request.destroy = error => { request.destroyed = true; if (error) request.emit('error', error); request.emit('close'); };
+        process.nextTick(() => {
+          if (url.startsWith('https://1.1.1.1/')) {
+            if (!hanging) request.destroy(Object.assign(new Error('unavailable'), { code: 'ECONNRESET' }));
+            return;
+          }
+          assert.equal(url, 'https://223.5.5.5/resolve?name=hongguoduanju.com&type=A');
+          const response = new EventEmitter(); response.statusCode = 200; response.setEncoding = () => {};
+          callback(response);
+          response.emit('data', JSON.stringify({ Status: 0, Answer: [{ type: 1, data: '8.8.8.8', TTL: 60 }] }));
+          response.emit('end'); request.emit('close');
+        });
+        return request;
+      }).webMediaRequestOptions('https://hongguoduanju.com/a');
+      const lookup = () => new Promise((resolve, reject) => guard.lookup('hongguoduanju.com', { all: true },
+        (error, value) => error ? reject(error) : resolve(value)));
+      const values = await Promise.all([lookup(), lookup()]);
+      assert.equal(values[0][0].address, '8.8.8.8');
+      assert.equal(values[1][0].address, '8.8.8.8');
+      await lookup();
+      assert.equal(calls.length, 2, 'parallel consumers and warm cache must share one resolver race');
+      assert.equal(requests.every(request => request.destroyed), true);
+    }
+  }],
+  ['secure DNS fails closed on redirect, invalid TLS, private and oversized responses', async () => {
+    for (const mode of ['redirect', 'tls', 'private', 'oversized']) {
+      const guard = guardWithDns([{ address: '198.18.14.190', family: 4 }], undefined, (_url, options, callback) => {
+        assert.notEqual(options.rejectUnauthorized, false);
+        const request = new EventEmitter();
+        request.destroy = error => { if (error) request.emit('error', error); request.emit('close'); };
+        process.nextTick(() => {
+          if (mode === 'tls') return request.destroy(Object.assign(new Error('certificate failed'), { code: 'CERT_HAS_EXPIRED' }));
+          const response = new EventEmitter(); response.statusCode = mode === 'redirect' ? 302 : 200;
+          response.headers = { location: 'https://127.0.0.1/resolve' }; response.setEncoding = () => {};
+          callback(response);
+          response.emit('data', mode === 'oversized' ? 'x'.repeat(65537) : JSON.stringify({ Status: 0,
+            Answer: [{ type: 1, data: mode === 'private' ? '198.18.0.1' : '8.8.8.8', TTL: 60 }] }));
+          response.emit('end'); request.emit('close');
+        });
+        return request;
+      }).webMediaRequestOptions('https://hongguoduanju.com/a');
+      await assert.rejects(new Promise((resolve, reject) => guard.lookup('hongguoduanju.com', { all: true },
+        (error, value) => error ? reject(error) : resolve(value))), error =>
+          error.code === (mode === 'tls' ? 'CERT_HAS_EXPIRED' : 'ERR_WEB_MEDIA_ADDRESS'));
+    }
+  }],
   ['unguarded warm sockets cannot bypass a guarded request', async () => {
     const axios = req('axios'); let hits = 0;
     const server = http.createServer((_request, response) => { hits++; response.end('ok'); });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = `http://media.example:${server.address().port}/a`;
+    const originalAgent = http.globalAgent;
+    const warmAgent = new http.Agent({ keepAlive: true });
+    // Pin only the deliberately unguarded warm-up connection to the fixture.
+    // Do not depend on the host global agent honoring a per-request DNS override.
+    warmAgent.createConnection = (options, callback) => http.Agent.prototype.createConnection.call(warmAgent,
+      { ...options, host: '127.0.0.1', hostname: undefined, lookup: undefined }, callback);
+    http.globalAgent = warmAgent;
     try {
-      await axios.get(url, { proxy: false, timeout: 2000, lookup: (_h, options, cb) =>
-        cb(null, options.all ? [{ address: '127.0.0.1', family: 4 }] : '127.0.0.1', 4) });
+      await axios.get(url, { proxy: false, timeout: 2000, httpAgent: warmAgent });
       await assert.rejects(axios.get(url, { proxy: false, timeout: 2000,
         ...guardWithDns([{ address: '127.0.0.1', family: 4 }]).webMediaRequestOptions(url) }),
         error => error.code === 'ERR_WEB_MEDIA_ADDRESS');
       assert.equal(hits, 1);
-    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    } finally {
+      http.globalAgent = originalAgent; warmAgent.destroy();
+      server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    }
   }],
   ['public DNS preserves all/single lookup shape and trusts configured proxy resolution', async () => {
     const records = [{ address: '8.8.8.8', family: 4 }];
