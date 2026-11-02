@@ -118,4 +118,4 @@ This is an unofficial Linux client and is not affiliated with Hongguo.
 
 ## Playback recovery
 
-Transient anonymous device registration failures can be retried after 10 seconds without restarting. Empty playback responses trigger at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Releases also require a live App source/download/decode/H.264/range smoke check before publication.
+Transient anonymous device registration failures can be retried after 10 seconds without restarting. Playback model requests include signatures bound to the final host, query and request body. Empty responses allow one alternate official host attempt and at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Releases also require a live App source/download/decode/H.264/range smoke check before publication.
