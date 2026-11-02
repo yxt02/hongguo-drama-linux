@@ -33,3 +33,16 @@ jobs:
         env:
           HONGGUO_LIVE_COMPAT: '1'
         run: timeout 240 node scripts/check-live-app-playback.cjs
+      - name: Package and verify the proposed update
+        env:
+          HONGGUO_ELECTRON_DIST: ${{ github.workspace }}/node_modules/electron/dist
+        run: |
+          node node_modules/electron/install.js
+          npm run package:linux
+          node scripts/check-linux-update-bundle.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hongguo-linux-proposed-update
+          path: dist/hongguo-drama-*-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
