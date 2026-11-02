@@ -288,7 +288,7 @@ async function requestJson(url, options, deadline, signal) {
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
         if (typeof response.data === 'string' && !response.data.trim()) {
-            throw Object.assign(new Error('App 接口返回空响应，请重启应用以重新建立匿名播放会话'), { code: 'EMPTY_RESPONSE' });
+            throw Object.assign(new Error('App 接口返回空响应，播放会话自动恢复未成功，请稍后重试'), { code: 'EMPTY_RESPONSE' });
         }
         const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
@@ -301,15 +301,26 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const requestedQuality = normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
-    const identity = await getPlaybackDevice(requestJson);
     const deadline = Date.now() + 12000;
     const signal = AbortSignal.timeout(12000);
     const payload = JSON.stringify({
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': [vid] },
     });
-    const signed = playbackRequest(payload, identity);
-    const response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+    let identity = await getPlaybackDevice(requestJson);
+    let response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const signed = playbackRequest(payload, identity);
+        try {
+            response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+            break;
+        } catch (error) {
+            if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 8000) throw error;
+            const renewed = await getPlaybackDevice(requestJson, identity);
+            if (renewed === identity) throw error;
+            identity = renewed;
+        }
+    }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;

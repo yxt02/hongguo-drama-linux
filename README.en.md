@@ -115,3 +115,7 @@ This project continues development from [jackotom/hongguo-drama](https://github.
 Code is licensed under [GPL-3.0](LICENSE). Bundled FFmpeg provenance, licensing and fixed checksums are documented in the [Linux media notice](build/ffmpeg/LINUX-NOTICE.txt) and [third-party notices](THIRD-PARTY-NOTICES.md).
 
 This is an unofficial Linux client and is not affiliated with Hongguo.
+
+## Playback recovery
+
+Transient anonymous device registration failures can be retried after 10 seconds without restarting. Empty playback responses trigger at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Releases also require a live App source/download/decode/H.264/range smoke check before publication.

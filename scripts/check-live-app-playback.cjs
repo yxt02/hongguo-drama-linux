@@ -38,6 +38,11 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
     context.registerLocalProtocol(); context.registerStreamProtocol();
     for (const [index, selected] of cases.entries()) {
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
+      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId, { quality, force: true });
+      console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
+        source: source.source || 'app', width: source.width, height: source.height, codec: source.codec,
+        failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
+      assert.ok(source.url, source.error || 'source-health failed');
       const result = await handlers['prepare-online-play']({}, { ...selected, quality, disk: true, requestId });
       assert.ok(result.success, result.error);
       context.liveVid = selected.vid; context.liveQuality = quality;

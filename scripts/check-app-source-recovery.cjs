@@ -9,7 +9,7 @@ const sourcePath = path.resolve(__dirname, '../src/native/app-source.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
 const vid = '7700946421087751193';
 
-function load(axios, { realDevice = false } = {}) {
+function load(axios, { realDevice = false, getPlaybackDevice } = {}) {
   const module = { exports: {} };
   const context = vm.createContext({
     module,
@@ -18,7 +18,7 @@ function load(axios, { realDevice = false } = {}) {
       if (name === 'node:crypto') return crypto;
       if (name === './sm3') return require('../src/native/sm3');
       if (name === './download-quality') return require('../src/native/download-quality');
-      if (name === './playback-device') return realDevice ? require('../src/native/playback-device')
+      if (name === './playback-device') return getPlaybackDevice ? { getPlaybackDevice } : realDevice ? require('../src/native/playback-device')
         : { getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }) };
       if (name === 'axios') return axios;
       return require(name);
@@ -96,6 +96,31 @@ function row(definition, width, height, suffix) {
   const inlineResponse = (rows, id = vid) => ({ status: 200, headers: {}, data: JSON.stringify({ code: 0,
     data: { [id]: { video_model: { video_list: rows, fallback_api: 'https://vod.snssdk.com/must-not-fetch' } } } }) });
   const plain = { ...row('1080p', 1080, 1920, 'inline'), encrypt_info: { encrypt: false } };
+  const identities = [{ device_id: '11', iid: '12', cdid: 'fixture' }, { device_id: '21', iid: '22', cdid: 'fixture' }];
+  let recoverCalls = 0, renewals = 0;
+  const recovery = load(async config => {
+    recoverCalls++;
+    if (new URL(config.url).searchParams.get('device_id') === '11') return { status: 200, headers: {}, data: '' };
+    return inlineResponse([plain]);
+  }, { getPlaybackDevice: async (_request, rejected) => {
+    if (rejected) { assert.equal(rejected, identities[0]); renewals++; }
+    return identities[rejected ? 1 : 0];
+  } });
+  assert.equal((await recovery.fetchAppPlayUrl(vid)).url, plain.main_url, 'empty model response renews the device and recovers');
+  assert.equal(recoverCalls, 2);
+  assert.equal(renewals, 1);
+  for (const status of [200, 403, 404]) {
+    let calls = 0, refreshed = 0;
+    const unavailable = load(async () => { calls++; return { status, headers: {}, data: '' }; },
+      { getPlaybackDevice: async (_request, rejected) => { if (rejected) refreshed++; return identities[rejected ? 1 : 0]; } });
+    await assert.rejects(unavailable.fetchAppPlayUrl(vid), error => status === 200 ? error.code === 'EMPTY_RESPONSE' : error.status === status);
+    assert.equal(calls, status === 200 ? 2 : 1, 'one recovery only; HTTP rejection must not rotate devices');
+    assert.equal(refreshed, status === 200 ? 1 : 0);
+  }
+  let cooldownCalls = 0;
+  await assert.rejects(load(async () => { cooldownCalls++; return { status: 200, headers: {}, data: '' }; },
+    { getPlaybackDevice: async () => identities[0] }).fetchAppPlayUrl(vid), error => error.code === 'EMPTY_RESPONSE');
+  assert.equal(cooldownCalls, 1, 'cooldown must not repeat the same rejected request');
   let inlineCalls = 0;
   const direct = load(async config => {
     inlineCalls++;
