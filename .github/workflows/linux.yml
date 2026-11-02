@@ -52,6 +52,7 @@ jobs:
           export HONGGUO_FFMPEG="$PWD/build/ffmpeg/linux-x64/ffmpeg"
           export HONGGUO_FFPROBE="$PWD/build/ffmpeg/linux-x64/ffprobe"
           npm run test:playback
+          HONGGUO_LIVE_COMPAT=1 timeout 240 node scripts/check-live-app-playback.cjs
           npm run package:linux
           node scripts/check-linux-update-bundle.cjs
       - name: Prepare release files
@@ -71,6 +72,6 @@ jobs:
         run: |
           notes="docs/release-${RELEASE_VERSION}-linux.md"
           test -f "$notes"
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "Linux v${RELEASE_VERSION} · 多季切换" --notes-file "$notes"
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "Linux v${RELEASE_VERSION}" --notes-file "$notes"
           gh release upload "$RELEASE_TAG" "dist/hongguo-drama-${RELEASE_VERSION}-linux-x64.tar.gz" "dist/hongguo-drama-${RELEASE_VERSION}-linux-source.zip" dist/SHA256SUMS.txt --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest

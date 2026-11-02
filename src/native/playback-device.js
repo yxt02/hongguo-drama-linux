@@ -10,6 +10,8 @@ const { gzipSync } = require('node:zlib');
 const REGISTER_URL = 'https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1';
 const KDF_SALT = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
 let registration;
+let refreshAfter = 0;
+let retryAfter = 0;
 
 function responseId(response, name) {
     const preferred = response?.[`${name}_str`];
@@ -18,10 +20,8 @@ function responseId(response, name) {
     return typeof value === 'string' && /^\d{1,30}$/.test(value) && /[1-9]/.test(value) ? value : '';
 }
 
-function getPlaybackDevice(requestJson) {
-    // Keep rejected promises too: prefetch and retries must not create more anonymous devices.
-    registration ||= Promise.resolve().then(async () => {
-        try {
+async function registerPlaybackDevice(requestJson) {
+    try {
             const now = Date.now();
             const cdid = crypto.randomUUID();
             const header = {
@@ -63,13 +63,46 @@ function getPlaybackDevice(requestJson) {
             }, Date.now() + 8000, AbortSignal.timeout(8000));
             const device_id = responseId(response, 'device_id');
             const iid = responseId(response, 'install_id');
-            if (!device_id || !iid || Number(response?.code ?? response?.Code ?? 0) !== 0) throw new Error('Invalid registration');
-            return Object.freeze({ device_id, iid, cdid });
-        } catch (_) {
-            throw Object.assign(new Error('匿名播放设备注册失败，请重启应用后重试'), { code: 'DEVICE_REGISTRATION_FAILED' });
-        }
+            if (Number(response?.code ?? response?.Code ?? 0) !== 0) throw Object.assign(new Error('Registration rejected'), { code: 'BUSINESS_REJECTED' });
+            if (!device_id || !iid) throw Object.assign(new Error('Invalid registration'), { code: 'INVALID_RESPONSE' });
+        return Object.freeze({ device_id, iid, cdid });
+    } catch (error) {
+        const status = Number(error?.status);
+        const registrationFailure = Number.isInteger(status) && status >= 300 && status <= 599 ? `HTTP_${status}`
+            : ['ECONNABORTED', 'ETIMEDOUT'].includes(error?.code) ? 'TIMEOUT'
+            : ['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(error?.code) ? 'NETWORK_ERROR'
+            : ['EMPTY_RESPONSE', 'INVALID_RESPONSE', 'BUSINESS_REJECTED', 'SECURITY_BLOCKED'].includes(error?.code) ? error.code : 'UNKNOWN';
+        throw Object.assign(new Error('匿名播放设备注册失败，请检查网络，10 秒后重试'), {
+            code: 'DEVICE_REGISTRATION_FAILED', registrationFailure,
+        });
+    }
+}
+
+function getPlaybackDevice(requestJson, rejectedDevice) {
+    if (retryAfter && Date.now() >= retryAfter) {
+        registration = undefined;
+        retryAfter = 0;
+    }
+    if (rejectedDevice && registration) {
+        const previous = registration;
+        return previous.then(current => {
+            // Concurrent and late failures must share the newest device, with at most one renewal per minute.
+            if (registration !== previous || current !== rejectedDevice || Date.now() < refreshAfter) return registration;
+            refreshAfter = Date.now() + 60000;
+            const renewal = Promise.resolve().then(() => registerPlaybackDevice(requestJson)).catch(error => {
+                if (registration === renewal) registration = previous;
+                throw error;
+            });
+            registration = renewal;
+            return registration;
+        });
+    }
+    // Share failures briefly to avoid concurrent retries, then allow recovery without restarting.
+    registration ||= Promise.resolve().then(() => registerPlaybackDevice(requestJson)).catch(error => {
+        retryAfter = Date.now() + 10000;
+        throw error;
     });
     return registration;
 }
 
-module.exports = { getPlaybackDevice };
+module.exports = { getPlaybackDevice, registerPlaybackDevice };

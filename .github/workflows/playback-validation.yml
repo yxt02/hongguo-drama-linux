@@ -1,0 +1,48 @@
+name: Playback validation
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  playback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies and pinned media tools
+        run: |
+          npm ci --no-audit --no-fund
+          curl -fL --retry 3 --max-time 300 -o /tmp/base-bundle.tar.gz https://github.com/yxt02/hongguo-drama-linux/releases/download/v1.74.6-linux/hongguo-drama-1.74.6-linux-x64.tar.gz
+          python3 scripts/restore-linux-media.py /tmp/base-bundle.tar.gz
+          node scripts/setup-ffmpeg-linux.js
+      - name: Playback regression and frontend build
+        run: |
+          fixture="$RUNNER_TEMP/playback-fixture.mp4"
+          build/ffmpeg/linux-x64/ffmpeg -v error -f lavfi -i testsrc2=size=360x640:rate=24 -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$fixture"
+          export HONGGUO_VIDEO_FIXTURE="$fixture"
+          export HONGGUO_FFMPEG="$PWD/build/ffmpeg/linux-x64/ffmpeg"
+          export HONGGUO_FFPROBE="$PWD/build/ffmpeg/linux-x64/ffprobe"
+          npm run test:playback
+          npm run build:react
+      - name: Live App media health
+        env:
+          HONGGUO_LIVE_COMPAT: '1'
+        run: timeout 240 node scripts/check-live-app-playback.cjs
+      - name: Package and verify the proposed update
+        env:
+          HONGGUO_ELECTRON_DIST: ${{ github.workspace }}/node_modules/electron/dist
+        run: |
+          node node_modules/electron/install.js
+          npm run package:linux
+          node scripts/check-linux-update-bundle.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hongguo-linux-proposed-update
+          path: dist/hongguo-drama-*-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7

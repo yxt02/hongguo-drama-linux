@@ -46,6 +46,23 @@ function routeFixture() {
   return { ...native, state };
 }
 const checks = [
+  ['registration diagnostics retain safe causes and allow retry without restart', async () => {
+    for (const [reason, expected, detail] of [
+      ['NETWORK_ERROR', 'NETWORK_ERROR', /网络连接失败/],
+      ['TIMEOUT', 'TIMEOUT', /超时/], ['HTTP_403', 'HTTP_403', /HTTP 403/],
+      ['EMPTY_RESPONSE', 'DEVICE_REGISTRATION_FAILED', /空响应/],
+      ['INVALID_RESPONSE', 'DEVICE_REGISTRATION_FAILED', /有效设备编号/],
+      ['PRIVATE_RESPONSE_SENTINEL', 'DEVICE_REGISTRATION_FAILED', /10 秒后重试/],
+    ]) {
+      const native = load('hongguo.js', { './app-source': { fetchAppPlayUrl: async () => {
+        throw Object.assign(new Error('PRIVATE_RESPONSE_SENTINEL'), { code: 'DEVICE_REGISTRATION_FAILED', registrationFailure: reason });
+      } } });
+      const result = await native.fetchPlayUrlSingle('11', '1');
+      assert.equal(result.sources[0].code, expected);
+      assert.match(result.error, detail);
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_RESPONSE_SENTINEL|重启/);
+    }
+  }],
   ['App network failures retain only safe codes and aggregate into distinct reasons', async () => {
     for (const [code, expected] of [['ECONNABORTED', 'TIMEOUT'], ['ETIMEDOUT', 'TIMEOUT'],
       ['ENOTFOUND', 'NETWORK_ERROR'], ['ECONNRESET', 'NETWORK_ERROR'], ['ERR_NETWORK', 'NETWORK_ERROR'],

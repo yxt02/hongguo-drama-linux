@@ -128,14 +128,30 @@ function helios(khronos) {
 }
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
-function playbackRequest(payload, identity) {
-    // Registered identity alone is sufficient for this endpoint; keep search signing separate.
-    const query = pythonUrlEncode({ ...DEVICE, ...identity, _rticket: String(Date.now()) });
-    return { url: `${VIDEO_API}?${query}`, body: Buffer.from(payload), headers: {
+function playbackRequest(payload, identity, host = new URL(VIDEO_API).hostname) {
+    const body = Buffer.from(payload);
+    const khronos = Math.floor(Date.now() / 1000), ticketBase = Date.now();
+    const device = { ...DEVICE, ...identity };
+    let query, url, requestTicket;
+    for (let n = 0; n < 128; n += 1) {
+        requestTicket = ticketBase + n;
+        query = pythonUrlEncode({ ...device, ts: String(khronos), _rticket: String(requestTicket) });
+        url = `https://${host}/novel/player/multi_video_model/v1/?${query}`;
+        if (branchOf(url, body, khronos) === 0) break;
+        if (n === 127) throw new Error('无法生成播放请求签名');
+    }
+    return { url, body, headers: {
         'User-Agent': PLAYBACK_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf',
         'Content-Type': 'application/json; charset=UTF-8',
+        'x-ss-req-ticket': String(requestTicket), 'sdk-version': '2', 'x-xs-from-web': '0',
+        'x-khronos': String(khronos),
+        'x-gorgon': xGorgon(query, body, khronos, Math.floor(Math.random() * 65536)),
+        'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
+        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, device), 'x-tt-dt': '',
+        'x-tt-store-region': 'cn', 'x-tt-store-region-src': 'did',
     } };
 }
+
 function parseSearchInteger(value) {
     if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) return null;
     const number = Number(value);
@@ -288,7 +304,7 @@ async function requestJson(url, options, deadline, signal) {
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
         if (typeof response.data === 'string' && !response.data.trim()) {
-            throw Object.assign(new Error('App 接口返回空响应，请重启应用以重新建立匿名播放会话'), { code: 'EMPTY_RESPONSE' });
+            throw Object.assign(new Error('App 接口返回空响应，播放会话自动恢复未成功，请稍后重试'), { code: 'EMPTY_RESPONSE' });
         }
         const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
@@ -301,15 +317,32 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const requestedQuality = normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
-    const identity = await getPlaybackDevice(requestJson);
-    const deadline = Date.now() + 12000;
-    const signal = AbortSignal.timeout(12000);
     const payload = JSON.stringify({
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': [vid] },
     });
-    const signed = playbackRequest(payload, identity);
-    const response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+    let identity = await getPlaybackDevice(requestJson);
+    // Registration has its own 8s budget; it must not consume the model request budget.
+    const deadline = Date.now() + 12000;
+    const signal = AbortSignal.timeout(12000);
+    let response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const signed = playbackRequest(payload, identity, attempt ? 'api5-normal-hl.fqnovel.com' : new URL(VIDEO_API).hostname);
+        if (attempt) signed.headers.Connection = 'close';
+        try {
+            response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+            break;
+        } catch (error) {
+            if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
+            // A throttled renewal must still permit one alternate-host attempt with the same identity.
+            if (deadline - Date.now() >= 8000) {
+                try { identity = await getPlaybackDevice(requestJson, identity); }
+                catch (_) { /* Keep the previously registered identity for the alternate route. */ }
+            }
+            if (deadline - Date.now() < 500) throw error;
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+    }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
