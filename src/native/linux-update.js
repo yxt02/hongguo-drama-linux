@@ -140,6 +140,32 @@ async function closeRunning(target) {
   }
   await waitForTargetExit(target);
 }
+
+async function refreshDesktopEntry(target) {
+  const dataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share');
+  const file = path.join(dataHome, 'applications', 'hongguo-drama.desktop');
+  let staging;
+  try {
+    const stat = await fsp.lstat(file);
+    if (!stat.isFile()) return;
+    const original = await fsp.readFile(file, 'utf8');
+    const lines = original.split(/\r?\n/);
+    if (!lines.includes(`Exec="${path.join(target, '红果短剧.sh')}" %U`)) return;
+    const updated = lines.map(line =>
+      line === 'StartupWMClass=hongguo-downloader' ? 'StartupWMClass=hongguo-drama' : line
+    ).join(original.includes('\r\n') ? '\r\n' : '\n');
+    if (updated === original) return;
+    staging = await fsp.mkdtemp(path.join(path.dirname(file), '.hongguo-desktop-'));
+    const replacement = path.join(staging, 'entry.desktop');
+    await fsp.writeFile(replacement, updated, { mode: stat.mode & 0o777 });
+    await fsp.rename(replacement, file);
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn('更新应用菜单入口失败：' + error.message);
+  } finally {
+    if (staging) await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function install(root, target, version, { rename = fsp.rename } = {}) {
   target = path.resolve(target); validateBundle(target); validateBundle(root, version);
   if (target === path.parse(target).root || path.resolve(root).startsWith(target + path.sep)) throw new Error('不能从安装目录内部替换自身');
@@ -154,6 +180,7 @@ async function install(root, target, version, { rename = fsp.rename } = {}) {
     await rename(target, backup);
     try { await rename(path.join(staging, 'next'), target); }
     catch (error) { await rename(backup, target); throw error; }
+    await refreshDesktopEntry(target);
     return { version, target, backup };
   } finally { await fsp.rm(staging, { recursive: true, force: true }); if (locked) await fsp.rmdir(lock); }
 }

@@ -60,7 +60,7 @@ Exec="$OPT_DIR/红果短剧.sh" %U
 Icon=$ICON
 Terminal=false
 Categories=AudioVideo;Video;Player;
-StartupWMClass=hongguo-downloader
+StartupWMClass=hongguo-drama
 Keywords=短剧;视频;播放;下载;
 EOF
 
