@@ -1929,7 +1929,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       let info;
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
-          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0 }), controller.signal, 30000);
+          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0,
+            role: options.sourceRole, onStage: options.onStage, signal: controller.signal }), controller.signal, 30000);
       } catch (error) {
         cancelled();
         if (!recoverable(error)) throw error;
@@ -1939,7 +1940,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       cancelled();
       if (!info?.url) {
         lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, sources: info?.sources });
-        if (!recoverable(lastError) || info?.locked) throw lastError;
+        // 主备均空已由取源流程处理完毕；收到该结果立即结束本轮，避免马上重走三次模型请求。
+        if (!recoverable(lastError) || info?.locked || info?.sources?.some(item => item?.exhausted)) throw lastError;
         continue;
       }
       const seen = new Set();
@@ -2025,7 +2027,7 @@ function registerStreamProtocol() {
     const cleanup = () => { session.requests.delete(controller); request.signal.removeEventListener('abort', abort); };
     try {
       return await withMediaRecovery(session.vid, entry.seriesId,
-        { playInfo: entry.playInfo, signal: controller.signal, recover: !session.mediaStarted }, async playInfo => {
+        { playInfo: entry.playInfo, signal: controller.signal, recover: !session.mediaStarted, sourceRole: 'foreground' }, async playInfo => {
         const identity = JSON.stringify([playInfo.url, playInfo.contentKey, playInfo.spadeA, playInfo.userAgent, playInfo.referer, playInfo.omitReferer]);
         const checkIdentity = () => {
           if (session.mediaStarted && session.mediaIdentity !== identity) throw new Error('片源已变化，请重新连接播放');
@@ -2286,6 +2288,17 @@ function playbackEntry(vid, quality = 'auto') {
 function withinPlaybackWindow(entry) {
   return !playbackWindow || (entry.seriesId === playbackWindow.seriesId && playbackWindow.keys.has(playbackCache.cacheKey(entry.vid, entry.quality)));
 }
+// 取源角色：当前集优先并可用快速会话更新；紧邻的下一可播集预取同样可用；更远的预取遇到主备均空即停止推进。
+function playbackSourceRole({ vid, seriesId, vidIndex, prefetch = false }) {
+  if (!prefetch) return 'foreground';
+  if (playbackWindow && playbackWindow.seriesId === String(seriesId || '') && Array.isArray(playbackWindow.episodes)
+    && Number.isInteger(playbackWindow.vidIndex)) {
+    const next = playbackWindow.episodes
+      .filter(e => e.vidIndex > playbackWindow.vidIndex).sort((a, b) => a.vidIndex - b.vidIndex)[0];
+    if (next && String(next.vid) === String(vid || '') && Number(next.vidIndex) === Number(vidIndex)) return 'next';
+  }
+  return 'distant';
+}
 function prunePlaybackWindow() {
   for (const job of compatPreparing.values()) if (job.vid && !withinPlaybackWindow(job)) cancelCompatJob(job);
   for (const [key, entry] of [...onlineCache]) if (entry.disk?.managed && !withinPlaybackWindow(entry)) deleteOnlineCacheEntry(key);
@@ -2432,11 +2445,14 @@ async function prepareManagedPlayback(payload) {
       if (job && (job.seriesId !== descriptor.seriesId || job.vidIndex !== vidIndex)) throw new Error('分集来源不匹配');
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
-        job = { ...descriptor, controller, disk: true, force };
+        job = { ...descriptor, controller, disk: true, force, stageListeners: [] };
+        const sourceRole = playbackSourceRole({ vid, seriesId, vidIndex, prefetch: payload.prefetch });
+        // 预取保持后台静默；前台等待（含预取提升为前台）时把取源恢复阶段回报给渲染器。
+        const onStage = stage => { for (const listener of job.stageListeners) { try { listener(stage); } catch (_) {} } };
         job.promise = Promise.resolve().then(async () => {
           let prepared = manual ? await prepareManualPlayback(manual.savePath, descriptor, controller.signal) : null;
           if (!prepared) prepared = await withMediaRecovery(String(vid), seriesId,
-            { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal },
+            { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal, sourceRole, onStage },
             candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal, (received, total, phase) => {
               for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
                 { vid, seriesId, vidIndex, requestId: active.requestId, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase: phase || 'downloading' });
@@ -2452,13 +2468,22 @@ async function prepareManagedPlayback(payload) {
         }).finally(() => { if (onlinePreparing.get(key) === job) onlinePreparing.delete(key); });
         onlinePreparing.set(key, job);
       }
-      session.job = job; entry = await job.promise;
+      session.job = job;
+      if (!payload.prefetch && Array.isArray(job.stageListeners)) job.stageListeners.push(stage => {
+        for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
+          { vid, seriesId, vidIndex, requestId: active.requestId, received: 0, total: 0, percent: 0, phase: stage });
+      });
+      entry = await job.promise;
     }
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     session.entry = { ...entry }; entry.lastUsed = Date.now();
     return { success: true, url: STREAM_SCHEME + '://play/' + streamId, streamId, cached, size: entry.size,
       codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, directH264: entry.directH264 };
-  } catch (error) { if (streamId) releaseOnlineSession(streamId); return { success: false, error: error.message }; }
+  } catch (error) {
+    if (streamId) releaseOnlineSession(streamId);
+    // 主备均空的终态结果单独标记：预取收到后停止推进本轮队列，前台用于准确提示。
+    return { success: false, error: error.message, ...(error?.sources?.some(item => item?.exhausted) ? { exhausted: true } : {}) };
+  }
 }
 
 ipcMain.handle('prepare-online-play', async (event, payload) => {
@@ -2479,7 +2504,10 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       let job = onlinePreparing.get(key);
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
-        job = { controller, force };
+        job = { controller, force, stageListeners: [] };
+        const sourceRole = playbackSourceRole({ vid: key, seriesId, vidIndex, prefetch });
+        // 前台等待（含预取提升为前台）时回报取源恢复阶段；预取本身保持后台静默。
+        const onStage = stage => { for (const listener of job.stageListeners) { try { listener(stage); } catch (_) {} } };
         job.promise = (async () => {
           const progress = (received,total,phase) => {
             for (const active of onlineSessions.values()) if (active.vid === key) {
@@ -2487,7 +2515,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
                 received,total,percent:total?Math.floor(received/total*100):0,phase:phase||'downloading'});
             }
           };
-          const prepared = await withMediaRecovery(key,seriesId,{playInfo:checkedPlayInfo,force,signal:controller.signal},async playInfo => {
+          const prepared = await withMediaRecovery(key,seriesId,{playInfo:checkedPlayInfo,force,signal:controller.signal,sourceRole,onStage},async playInfo => {
             const entry = {size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0,
               // 让渲染器提前知道编码：本机解不了 HEVC 时可直接转兼容格式，不再先播一段黑屏。
               codec:String(playInfo.codec || '')};
@@ -2510,6 +2538,12 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
         onlinePreparing.set(key, job);
       }
       session.job = job;
+      if (!prefetch && Array.isArray(job.stageListeners)) job.stageListeners.push(stage => {
+        for (const active of onlineSessions.values()) if (active.vid === key) {
+          sendToRenderer('online-play-progress',{vid:key,seriesId,vidIndex,requestId:active.requestId,
+            received:0,total:0,percent:0,phase:stage});
+        }
+      });
       entry = await job.promise;
     }
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
@@ -2518,7 +2552,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       cached, streaming: !!entry.playInfo, codec: String(entry.codec || '') };
   } catch (error) {
     releaseOnlineSession(streamId);
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, ...(error?.sources?.some(item => item?.exhausted) ? { exhausted: true } : {}) };
   }
 });
 
@@ -2819,7 +2853,7 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
         tmpInput = path.join(getCompatDir(), '.tmp_' + randomUUID() + '.mp4');
         await fsp.writeFile(tmpInput, cached.buffer); inputPath = tmpInput;
       } else {
-        const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, signal },
+        const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, signal, sourceRole: 'foreground' },
           candidate => prepareDiskEpisode(String(vid), seriesId, quality, candidate, signal));
         diskInput = prepared; prepared.disk.readers++; inputPath = prepared.filePath;
       }

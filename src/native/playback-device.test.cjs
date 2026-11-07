@@ -14,14 +14,15 @@ const failureMessage = '匿名播放设备注册失败，请检查网络，10 �
 function load(clock = Date) {
     const module = { exports: {} };
     vm.runInNewContext(source, {
-        module, Buffer, AbortSignal, Date: clock,
+        module, Buffer, AbortSignal, AbortController, Date: clock, setTimeout, clearTimeout,
         require(name) {
             assert.ok(['node:crypto', 'node:zlib'].includes(name), 'no transport or persistence dependencies');
             return require(name);
         },
         console: { log() { assert.fail('no logging'); }, warn() { assert.fail('no logging'); }, error() { assert.fail('no logging'); } },
     }, { filename: 'playback-device.js' });
-    return module.exports.getPlaybackDevice;
+    // Keep returning a callable getPlaybackDevice; the fast-update API rides along for new checks.
+    return Object.assign(module.exports.getPlaybackDevice, module.exports);
 }
 
 test('lazy registration shares one promise and one exact identity across concurrent and later playback', async () => {
@@ -273,4 +274,151 @@ test('business rejection cannot be accepted even if IDs are present', async () =
             code: 'DEVICE_REGISTRATION_FAILED', message: failureMessage,
         });
     }
+});
+
+test('fast updates keep 10s spacing and share one registration across concurrent callers', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    await get(request);
+    assert.equal(calls, 1);
+    await assert.rejects(get.requestFastDeviceUpdate(request), error => {
+        assert.equal(error.code, 'DEVICE_UPDATE_COOLDOWN');
+        assert.ok(error.retryAt > now && error.retryAt <= now + 10000, 'cooldown points at the next update slot');
+        return true;
+    });
+    assert.equal(calls, 1, 'no registration before the spacing window closes');
+    now += 10001;
+    let finish;
+    let shared = 0;
+    const pending = () => { shared++; return new Promise(resolve => { finish = resolve; }); };
+    const updates = [get.requestFastDeviceUpdate(pending), get.requestFastDeviceUpdate(pending), get.requestFastDeviceUpdate(pending)];
+    await Promise.resolve();
+    assert.equal(shared, 1, 'concurrent fast updates share one in-flight registration');
+    finish({ device_id: '7', install_id: '8' });
+    const identities = await Promise.all(updates);
+    assert.ok(identities.every(identity => identity === identities[0]));
+    assert.equal(await get(request), identities[0], 'later normal callers share the updated identity');
+    assert.equal(calls, 1);
+});
+
+test('a fast update may wait out the remaining spacing window instead of failing', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    await get(request);
+    now += 9970; // 30ms of spacing remain; a foreground caller may wait exactly that long.
+    const update = get.requestFastDeviceUpdate(request, { waitMs: 1000 });
+    await Promise.resolve();
+    assert.equal(calls, 1, 'must not register while the spacing window is open');
+    now += 31;
+    const identity = await update;
+    assert.equal(calls, 2);
+    assert.equal(await get(request), identity);
+});
+
+test('a late empty response reuses the newer session during and after the fast update interval', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => ({ device_id: String(++calls), install_id: String(100 + calls) });
+    const rejectedDevice = await get(request);
+    now += 10001;
+    const replacement = await get.requestFastDeviceUpdate(request, { rejectedDevice });
+    assert.notEqual(replacement, rejectedDevice);
+    assert.equal(await get.requestFastDeviceUpdate(request, { rejectedDevice }), replacement);
+    now += 10001;
+    assert.equal(await get.requestFastDeviceUpdate(request, { rejectedDevice }), replacement);
+    assert.equal(calls, 2, 'a late failure does not replace the current session');
+    assert.notEqual(await get.requestFastDeviceUpdate(request, { rejectedDevice: replacement }), replacement);
+    assert.equal(calls, 3, 'a failure from the current session can still renew it');
+});
+
+test('a failed fast update backs off for 60 seconds and recovers afterwards', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const ok = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    await get(ok);
+    now += 10001;
+    const fail = async () => { calls++; throw Object.assign(new Error('PRIVATE_RESPONSE_SENTINEL'), { code: 'ECONNRESET' }); };
+    await assert.rejects(get.requestFastDeviceUpdate(fail), { code: 'DEVICE_REGISTRATION_FAILED' });
+    now += 59999;
+    await assert.rejects(get.requestFastDeviceUpdate(ok), { code: 'DEVICE_UPDATE_COOLDOWN' }, 'failure backoff still active');
+    assert.equal(calls, 2);
+    now += 1;
+    const renewed = await get.requestFastDeviceUpdate(ok);
+    assert.equal(calls, 3);
+    assert.equal(await get(ok), renewed, 'the fast-updated identity is shared with normal callers');
+});
+
+test('cancelling one fast-update waiter keeps the shared update running for others', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    await get(async () => { calls++; return { device_id: '11', install_id: '12' }; });
+    now += 10001;
+    let finish;
+    const pending = () => { calls++; return new Promise(resolve => { finish = resolve; }); };
+    const controller = new AbortController();
+    const cancelled = get.requestFastDeviceUpdate(pending, { signal: controller.signal });
+    const waiter = get.requestFastDeviceUpdate(pending);
+    controller.abort();
+    await assert.rejects(cancelled, { code: 'ERR_CANCELED' });
+    finish({ device_id: '21', install_id: '22' });
+    const identity = await waiter;
+    assert.equal(identity.device_id, '21', 'other waiters still receive the shared update');
+    assert.equal(await get(pending), identity);
+    assert.equal(calls, 2);
+});
+
+test('a normal renewal starts a fresh 10s fast-update spacing window', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    const first = await get(request);
+    now += 60001;
+    await get(request, first);
+    assert.equal(calls, 2);
+    await assert.rejects(get.requestFastDeviceUpdate(request), { code: 'DEVICE_UPDATE_COOLDOWN' });
+    assert.equal(calls, 2, 'no extra registration inside the new spacing window');
+});
+
+test('a renewed session that still yields empty pauses fast updates for 60 seconds', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    const first = await get(request);
+    now += 10001;
+    get.pauseFastDeviceUpdates();
+    for (const [advance, blocked] of [[9999, true], [1, true], [49999, true], [1, false]]) {
+        now += advance;
+        if (blocked) {
+            await assert.rejects(get.requestFastDeviceUpdate(request), error => {
+                assert.equal(error.code, 'DEVICE_UPDATE_COOLDOWN');
+                assert.ok(error.retryAt > now, 'cooldown reports when a retry is possible');
+                return true;
+            });
+            assert.equal(calls, 1, '退避期内不再次注册');
+        } else {
+            const renewed = await get.requestFastDeviceUpdate(request);
+            assert.equal(calls, 2, '退避结束后恢复快速更新');
+            assert.notEqual(renewed, first);
+        }
+    }
+});
+
+test('a normal renewal shares the in-flight fast update instead of registering again', async () => {
+    let now = Date.now(), calls = 0;
+    const get = load({ now: () => now });
+    const request = async () => { calls++; return { device_id: String(100 + calls), install_id: String(200 + calls) }; };
+    const first = await get(request);
+    now += 10001;
+    let finish;
+    const pending = () => new Promise(resolve => { finish = resolve; });
+    const fastUpdate = get.requestFastDeviceUpdate(pending);
+    const normal = get(request, first);
+    await Promise.resolve();
+    assert.equal(calls, 1, '普通更新在快速更新在途时不得再注册一次');
+    finish({ device_id: '21', install_id: '22' });
+    const fast = await fastUpdate;
+    assert.equal((await normal).device_id, fast.device_id, '两种更新共享同一个新身份');
+    assert.equal(await get(request), fast, '后续调用继续共享该身份');
 });

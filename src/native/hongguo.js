@@ -162,13 +162,40 @@ function markWebMediaFailure(playInfo) {
   if (failedWebMedia.size > 128) failedWebMedia.delete(failedWebMedia.keys().next().value);
 }
 
+const canceledLookup = () => Object.assign(new Error('已取消取源请求'), { code: 'ERR_CANCELED' });
+
+async function joinCachedRequest(key, request, signal) {
+  request.waiters++;
+  let abort;
+  try {
+    if (!signal) return await request.promise;
+    const canceled = new Promise((_resolve, reject) => {
+      abort = () => reject(canceledLookup());
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
+    return await Promise.race([request.promise, canceled]);
+  } finally {
+    if (abort) signal.removeEventListener('abort', abort);
+    request.waiters--;
+    if (signal?.aborted && !request.waiters && request.controller) {
+      // A caller arriving after the last waiter leaves needs a fresh lookup.
+      if (pendingRequests.get(key) === request) pendingRequests.delete(key);
+      request.controller.abort();
+    }
+  }
+}
+
 /** 仅保留短期成功结果；重复点击共享请求，失败后立即允许重试。 */
-async function cachedRequest(key, ttl, load, { force = false } = {}) {
+async function cachedRequest(key, ttl, load, { force = false, signal } = {}) {
+  if (signal?.aborted) throw canceledLookup();
   const cached = responseCache.get(key);
   if (!force && cached && cached.expires > Date.now()) return cached.value;
   responseCache.delete(key);
-  if (!force && pendingRequests.has(key)) return pendingRequests.get(key);
-  const request = Promise.resolve().then(load).then(value => {
+  const pending = !force && pendingRequests.get(key);
+  if (pending) return joinCachedRequest(key, pending, signal);
+  const request = { controller: signal ? new AbortController() : null, waiters: 0 };
+  request.promise = Promise.resolve().then(() => load(request.controller?.signal)).then(value => {
     // A forced lookup owns the cache even if an older request finishes later.
     if (pendingRequests.get(key) === request) {
       responseCache.set(key, { value, expires: Date.now() + ttl });
@@ -179,7 +206,7 @@ async function cachedRequest(key, ttl, load, { force = false } = {}) {
     if (pendingRequests.get(key) === request) pendingRequests.delete(key);
   });
   pendingRequests.set(key, request);
-  return request;
+  return joinCachedRequest(key, request, signal);
 }
 
 /** MP4 直链：去掉 HTML 转义并剥掉 Range 头，让 CDN 回整段 */
@@ -628,9 +655,14 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
     const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
-    return await cachedRequest(cacheKey, 30000, async () => {
+    return await cachedRequest(cacheKey, 30000, async signal => {
       try {
-        return await require('./app-source').fetchAppPlayUrl(String(vid), { quality, preferQuality: true });
+        return await require('./app-source').fetchAppPlayUrl(String(vid), {
+          quality, preferQuality: true,
+          role: ['foreground', 'next', 'distant'].includes(options.role) ? options.role : undefined,
+          onStage: typeof options.onStage === 'function' ? options.onStage : undefined,
+          signal,
+        });
       } catch (error) {
         throw unavailableSources([sourceFailure('app', error)], quality);
       }
@@ -658,7 +690,18 @@ function sourceFailure(source, error) {
   if (code === 'SECURITY_BLOCKED' || code.startsWith('ERR_WEB_MEDIA_')) return { source, code: 'SECURITY_BLOCKED', message: '片源地址被安全校验阻止' };
   if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
-  if (code === 'EMPTY_RESPONSE') return { source, code, message: '播放接口返回空响应，已尝试恢复会话，请稍后重试' };
+  if (code === 'EMPTY_RESPONSE') {
+    // 提示语依据实际执行结果区分「会话已更新」「仍在冷却」和「补充播放信息返回空响应」。
+    const recovery = error?.recovery || {};
+    if (recovery.stage === 'supplement') return { source, code, message: '补充播放信息返回空响应，请稍后重试' };
+    const waitSeconds = Number.isFinite(recovery.retryAt) && recovery.retryAt > Date.now()
+      ? Math.max(1, Math.ceil((recovery.retryAt - Date.now()) / 1000)) : 0;
+    const detail = ['cooldown', 'stopped'].includes(recovery.fastUpdate)
+      ? `会话快速更新仍在冷却${waitSeconds ? `，约 ${waitSeconds} 秒后可再试` : ''}`
+      : recovery.fastUpdate === 'failed' ? '会话更新未成功，稍后自动重试'
+      : recovery.sessionUpdated ? '已更新会话后仍返回空响应' : '已尝试备用入口';
+    return { source, code, message: `播放接口返回空响应（${detail}），请稍后重试`, exhausted: true };
+  }
   if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };

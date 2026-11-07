@@ -719,7 +719,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         }
         let res = prefetched ? await prefetched.onlinePromise : null;
         if (res?.success && !res.url) res = null;
-        if ((!res || !res.success) && onlineRequestRef.current === request) {
+        // 预取已耗尽恢复次数（主备均空终态）时不再立即重发取源：直接呈现失败与重试入口，等下一轮。
+        if ((!res || !res.success) && !res?.exhausted && onlineRequestRef.current === request) {
           res = await window.electronAPI.prepareOnlinePlay({
             requestId: request.requestId, vid: ep.vid, seriesId: activeSeriesId, vidIndex,
             force, disk: true, quality,
@@ -872,6 +873,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       request.onlinePromise
         .then(async result => {
           try {
+            // 主备均空的终态结果：本轮预取停止推进，等待下次播放触发，避免连续打满三次模型请求。
+            if (result && result.success === false && result.exhausted) prefetchQueueRef.current = [];
             const unsupportedHevc = linuxPlayback && cannotPlayHevc(result?.codec);
             if (result?.success && !result.directH264 && (request.compat || unsupportedHevc) && prefetchRef.current.get(request.key) === request) {
               request.compatStarted = true;
@@ -1613,12 +1616,14 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>
                 <RefreshCw size={30} className="spin" />
-                <p>{onlineProgress.phase === 'preparing' ? '正在连接片源…' : onlineProgress.phase === 'decrypting' ? '正在准备播放…' : '正在缓冲在线播放…'}</p>
-                {onlineProgress.phase !== 'preparing' && <div className="player-wait-bar">
+                <p>{onlineProgress.phase === 'preparing' ? '正在连接片源…' : onlineProgress.phase === 'reconnecting' ? '正在重连片源…'
+                  : onlineProgress.phase === 'decrypting' ? '正在准备播放…' : '正在缓冲在线播放…'}</p>
+                {onlineProgress.phase !== 'preparing' && onlineProgress.phase !== 'reconnecting' && <div className="player-wait-bar">
                   <div className="player-wait-fill" style={{ width: `${onlineProgress.percent || 0}%` }} />
                 </div>}
                 <span className="player-placeholder-sub">
-                  {onlineProgress.phase === 'preparing' ? '获取可播放地址' : `${onlineProgress.percent || 0}%`}
+                  {onlineProgress.phase === 'preparing' ? '获取可播放地址' : onlineProgress.phase === 'reconnecting' ? '正在尝试备用入口或更新会话'
+                    : `${onlineProgress.percent || 0}%`}
                   {onlineProgress.total ? ` · ${(onlineProgress.received / 1048576).toFixed(1)} / ${(onlineProgress.total / 1048576).toFixed(1)} MB` : ''}
                   {' · 不写入下载目录'}
                 </span>

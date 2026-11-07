@@ -15,7 +15,8 @@ function windowEntries({ seriesId, vidIndex, episodes, quality = 'auto' } = {}) 
   const selected = episodes.filter(e => typeof e.vid === 'string' && e.vid && Number.isInteger(e.vidIndex)
     && e.vidIndex > 0 && Math.abs(e.vidIndex - vidIndex) <= RADIUS);
   if (selected.length > RADIUS * 2 + 1 || new Set(selected.map(e => e.vidIndex)).size !== selected.length) throw new Error('缓存窗口最多保留前后各五集');
-  return { seriesId: String(seriesId), vidIndex, quality, keys: new Set(selected.map(e => cacheKey(e.vid, quality))) };
+  return { seriesId: String(seriesId), vidIndex, quality, keys: new Set(selected.map(e => cacheKey(e.vid, quality))),
+    episodes: selected.map(e => ({ vid: e.vid, vidIndex: e.vidIndex })) };
 }
 function manifest(entry) {
   return { version: 1, vid: entry.vid, seriesId: entry.seriesId, vidIndex: entry.vidIndex, quality: entry.quality,

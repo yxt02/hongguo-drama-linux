@@ -82,12 +82,14 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
 
 function nativeFixture() {
   const pending = [];
-  const context = { module: { exports: {} }, Buffer, URL, process: { env: {} },
-    require: name => name === './app-source' ? { fetchAppPlayUrl: () => new Promise(resolve => pending.push(resolve)) } : name === 'axios' ? {} : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
+  const context = { module: { exports: {} }, Buffer, URL, AbortController, process: { env: {} },
+    require: name => name === './app-source'
+      ? { fetchAppPlayUrl: (_vid, { signal }) => new Promise(resolve => pending.push({ resolve, signal })) }
+      : name === 'axios' ? {} : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
   };
   vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'hongguo.js'), 'utf8') + '\nmodule.exports.parseModelVideo = parseModelVideo;', context);
   return { ...context.module.exports, pending,
-    finish(index, name) { pending[index]({ source: 'app', url: `https://media.example/${name}.mp4` }); },
+    finish(index, name) { pending[index].resolve({ source: 'app', url: `https://media.example/${name}.mp4` }); },
   };
 }
 const mediaUrl = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
@@ -165,6 +167,35 @@ const checks = [
       }
       assert.equal((await f.fetchPlayUrlSingle('11', '1')).url, 'https://media.example/new.mp4');
     }
+  }],
+  ['canceling one caller keeps the shared App source lookup alive', async () => {
+    const f = nativeFixture();
+    const canceled = new AbortController(), active = new AbortController();
+    const first = f.fetchPlayUrlSingle('11', '1', { signal: canceled.signal });
+    await turn();
+    const second = f.fetchPlayUrlSingle('11', '1', { signal: active.signal });
+    canceled.abort();
+    assert.equal((await first).url, null);
+    assert.equal(f.pending.length, 1, 'both callers use the same source lookup');
+    assert.equal(f.pending[0].signal.aborted, false, 'the other caller still needs the source');
+    f.finish(0, 'shared');
+    assert.equal((await second).url, 'https://media.example/shared.mp4');
+  }],
+  ['canceling the last caller aborts the App source lookup and leaves a fresh retry', async () => {
+    const f = nativeFixture(), controller = new AbortController();
+    const pending = f.fetchPlayUrlSingle('11', '1', { signal: controller.signal });
+    await turn();
+    controller.abort();
+    assert.equal((await pending).url, null);
+    assert.equal(f.pending[0].signal.aborted, true);
+    const retry = f.fetchPlayUrlSingle('11', '1');
+    await turn();
+    assert.equal(f.pending.length, 2, 'retry cannot join a canceled source lookup');
+    f.finish(1, 'fresh');
+    assert.equal((await retry).url, 'https://media.example/fresh.mp4');
+    f.finish(0, 'obsolete');
+    await turn();
+    assert.equal((await f.fetchPlayUrlSingle('11', '1')).url, 'https://media.example/fresh.mp4');
   }],
   ['pure JS SM3 vectors', async () => {
     assert.ok(fs.existsSync(path.join(nativeDir, 'sm3.js')), 'pure JS SM3 missing');

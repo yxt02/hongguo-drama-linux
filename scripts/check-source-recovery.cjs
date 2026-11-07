@@ -81,6 +81,23 @@ const checks = [
       assert.doesNotMatch(JSON.stringify(result), /secret|signed\.invalid|private/);
     }
   }],
+  ['empty-response prompts distinguish renewed sessions, cooldown and supplementary lookups', async () => {
+    for (const [error, pattern, exhausted] of [
+      [{ code: 'EMPTY_RESPONSE', recovery: { sessionUpdated: true, fastUpdate: 'updated' } }, /已更新会话后仍返回空响应/, true],
+      [{ code: 'EMPTY_RESPONSE', recovery: { fastUpdate: 'cooldown', retryAt: Date.now() + 9500 } }, /仍在冷却，约 \d+ 秒后可再试/, true],
+      [{ code: 'EMPTY_RESPONSE', recovery: { stage: 'supplement' } }, /补充播放信息返回空响应/, undefined],
+      [{ code: 'EMPTY_RESPONSE', recovery: {} }, /已尝试备用入口/, true],
+    ]) {
+      const f = load('hongguo.js', { './app-source': { fetchAppPlayUrl: async () => {
+        throw Object.assign(new Error('PRIVATE_RESPONSE_SENTINEL'), error);
+      } } });
+      const result = await f.fetchPlayUrlSingle('11', '1');
+      assert.equal(result.sources[0].code, 'EMPTY_RESPONSE');
+      assert.match(result.error, pattern);
+      assert.equal(result.sources[0].exhausted, exhausted, '主备均空才标记终态');
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_RESPONSE_SENTINEL/);
+    }
+  }],
   ['App distinguishes HTTP, business refusal, absent model, parsing and unsafe media', async () => {
     const first = { data: { '11': { video_model: { fallback_api: 'https://vod.snssdk.com/info' } } } };
     const cases = [

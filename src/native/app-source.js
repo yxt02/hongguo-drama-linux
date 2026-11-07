@@ -6,13 +6,18 @@
 // bounded HTTPS transport; exact episode matching; supported codec selection.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
-const { getPlaybackDevice } = require('./playback-device');
+const { getPlaybackDevice, requestFastDeviceUpdate, pauseFastDeviceUpdates } = require('./playback-device');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
+// 主备入口与快速恢复的实测依据见 docs/linux-app-source-recovery-plan.md。
+const MODEL_ROUTES = { main: new URL(VIDEO_API).hostname, backup: 'api5-normal-hl.fqnovel.com' };
+const FAST_UPDATE_INTERVAL = 10000;
+// 记录最近一次成功返回模型的入口；新会话重取时优先使用它，缺少记录时用主入口。
+let lastGoodRoute = null;
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
@@ -304,7 +309,7 @@ async function requestJson(url, options, deadline, signal) {
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
         if (typeof response.data === 'string' && !response.data.trim()) {
-            throw Object.assign(new Error('App 接口返回空响应，播放会话自动恢复未成功，请稍后重试'), { code: 'EMPTY_RESPONSE' });
+            throw Object.assign(new Error('App 接口返回空响应'), { code: 'EMPTY_RESPONSE' });
         }
         const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
@@ -313,8 +318,41 @@ async function requestJson(url, options, deadline, signal) {
     throw Object.assign(new Error('App 片源跳转次数过多'), { code: 'SECURITY_BLOCKED' });
 }
 
+// 取源阶段日志：只记录入口、响应大小、耗时、是否实际更新会话与结果。
+function sourceLog(text) { try { console.log(`[App取源] ${text}`); } catch (_) {} }
+function routeLabel(route) { return route === MODEL_ROUTES.backup ? '备用入口' : '主入口'; }
+
+/**
+ * 主备均空后按取源角色申请一次会话更新。
+ * foreground/next 走共享的快速更新（10 秒间隔、失败退避）；distant 停止推进；
+ * background 沿用原有的每分钟一次更新资格。拿不到新会话时不发第三次模型请求。
+ */
+async function renewPlaybackSession(role, identity, deadline, signal) {
+    const remaining = () => deadline - Date.now();
+    if (role === 'distant') return { fastUpdate: 'stopped' };
+    if (role === 'foreground' || role === 'next') {
+        if (remaining() < 9000) return { fastUpdate: 'cooldown' };
+        // 当前集最多等剩余的短间隔；下一集可趁当前视频继续播放时等待。
+        const waitMs = role === 'foreground' ? Math.min(FAST_UPDATE_INTERVAL, remaining()) : remaining();
+        try {
+            return { identity: await requestFastDeviceUpdate(requestJson, { rejectedDevice: identity, waitMs, signal }), fastUpdate: 'updated' };
+        } catch (error) {
+            if (error.code === 'ERR_CANCELED') throw error;
+            if (error.code === 'DEVICE_UPDATE_COOLDOWN') return { fastUpdate: 'cooldown', retryAt: error.retryAt };
+            return { fastUpdate: 'failed' };
+        }
+    }
+    if (remaining() < 8000) return { fastUpdate: 'cooldown' };
+    try {
+        const renewed = await getPlaybackDevice(requestJson, identity);
+        return renewed === identity ? { fastUpdate: 'cooldown' } : { identity: renewed, fastUpdate: 'updated' };
+    } catch (_) { return { fastUpdate: 'failed' }; }
+}
+
 async function fetchAppPlayUrl(vid, options = {}) {
     const requestedQuality = normalizeDownloadQuality(options.quality);
+    const role = ['foreground', 'next', 'distant'].includes(options.role) ? options.role : 'background';
+    const onStage = typeof options.onStage === 'function' ? options.onStage : null;
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
     const payload = JSON.stringify({
@@ -322,26 +360,64 @@ async function fetchAppPlayUrl(vid, options = {}) {
         mixed_video_id_map: { '1004': [vid] },
     });
     let identity = await getPlaybackDevice(requestJson);
-    // Registration has its own 8s budget; it must not consume the model request budget.
-    const deadline = Date.now() + 12000;
-    const signal = AbortSignal.timeout(12000);
+    // Registration has its own 8s budget; the model round keeps the foreground 30s cap with renewal budget reserved.
+    const budget = role === 'foreground' || role === 'next' ? 27000 : 12000;
+    const deadline = Date.now() + budget;
+    // 外部取消（切集、换剧、退出）与超时共同约束本轮：冷却等待和注册在任务取消后不再继续。
+    const timeoutSignal = AbortSignal.timeout(budget);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+    const started = Date.now();
+    const recovery = { route: MODEL_ROUTES.main, sessionUpdated: false, fastUpdate: 'none' };
+    const notify = stage => { try { onStage?.(stage); } catch (_) {} };
+    const modelRequest = async (route, sessionIdentity) => {
+        const signed = playbackRequest(payload, sessionIdentity, route);
+        if (route !== MODEL_ROUTES.main) signed.headers.Connection = 'close';
+        const response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+        lastGoodRoute = route;
+        return response;
+    };
     let response;
-    for (let attempt = 0; attempt < 2; attempt++) {
-        const signed = playbackRequest(payload, identity, attempt ? 'api5-normal-hl.fqnovel.com' : new URL(VIDEO_API).hostname);
-        if (attempt) signed.headers.Connection = 'close';
+    try {
         try {
-            response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
-            break;
+            response = await modelRequest(MODEL_ROUTES.main, identity);
         } catch (error) {
-            if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
-            // A throttled renewal must still permit one alternate-host attempt with the same identity.
-            if (deadline - Date.now() >= 8000) {
-                try { identity = await getPlaybackDevice(requestJson, identity); }
-                catch (_) { /* Keep the previously registered identity for the alternate route. */ }
+            // 只把播放模型请求的 HTTP 200 空正文归入快速恢复路径。
+            if (error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
+            recovery.route = MODEL_ROUTES.backup;
+            notify('reconnecting');
+            try {
+                response = await modelRequest(MODEL_ROUTES.backup, identity);
+            } catch (backupError) {
+                if (backupError.code !== 'EMPTY_RESPONSE') throw backupError;
+                // 主备均空：只申请一次会话更新，然后优先用最近成功过的入口重取一次。
+                const renewed = await renewPlaybackSession(role, identity, deadline, signal);
+                recovery.fastUpdate = renewed.fastUpdate;
+                if (renewed.retryAt) recovery.retryAt = renewed.retryAt;
+                if (!renewed.identity) throw backupError;
+                identity = renewed.identity;
+                recovery.sessionUpdated = true;
+                recovery.route = lastGoodRoute || MODEL_ROUTES.main;
+                notify('reconnecting');
+                response = await modelRequest(recovery.route, identity);
             }
-            if (deadline - Date.now() < 500) throw error;
-            await new Promise(resolve => setTimeout(resolve, 300));
         }
+    } catch (error) {
+        const bytes = error.code === 'EMPTY_RESPONSE' ? 0 : -1;
+        if (recovery.route !== MODEL_ROUTES.main || error.code === 'EMPTY_RESPONSE') {
+            sourceLog(`${vid} ${role} ${routeLabel(recovery.route)} ` +
+                `${bytes}B ${Date.now() - started}ms 会话${recovery.sessionUpdated ? '已更新' : '未更新'} 失败:${error.code || error.message}`);
+        }
+        if (error.code === 'EMPTY_RESPONSE') {
+            // 新会话重取仍返回空正文：从失败时起暂停快速更新 60 秒（注册失败的退避由会话管理负责）。
+            if (recovery.sessionUpdated && typeof pauseFastDeviceUpdates === 'function') pauseFastDeviceUpdates();
+            // 主备均空，本轮回合允许的恢复已完成；当外部重试收到此结果时，它将结束本回合，而不是立即再次经历三次模型请求。
+            throw Object.assign(new Error('App 播放接口连续返回空响应'), { code: 'EMPTY_RESPONSE', exhausted: true, recovery: { ...recovery } });
+        }
+        throw error;
+    }
+    if (recovery.route !== MODEL_ROUTES.main || recovery.sessionUpdated) {
+        sourceLog(`${vid} ${role} ${routeLabel(recovery.route)} ${JSON.stringify(response).length}B ` +
+            `${Date.now() - started}ms 会话${recovery.sessionUpdated ? '已更新' : '未更新'} 成功`);
     }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];
@@ -352,7 +428,13 @@ async function fetchAppPlayUrl(vid, options = {}) {
     if (!inline) {
         const fallback = parseFallback(model.fallback_api);
         if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
+        // 补充媒体信息请求的空响应不进入主备快速恢复路径，单独提示。
+        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal).catch(error => {
+            if (error.code !== 'EMPTY_RESPONSE') throw error;
+            sourceLog(`${vid} ${role} 补充信息 0B ${Date.now() - started}ms 空响应`);
+            throw Object.assign(new Error('补充播放信息返回空响应，请稍后重试'),
+                { code: 'EMPTY_RESPONSE', recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated, fastUpdate: 'none', stage: 'supplement' } });
+        });
         if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
             throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
         }
@@ -420,7 +502,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
             }
         } catch (error) { lastError = error; }
     }
-    if (variants.length) return { ...variants[0], variants };
+    if (variants.length) return { ...variants[0], variants, recovery: { route: recovery.route, sessionUpdated: recovery.sessionUpdated } };
     throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });
 }

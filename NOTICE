@@ -102,3 +102,8 @@ code was copied. Content rights remain with their respective owners.
 Mac arm64、Mac x64、Windows x64 共用版本号；平台验证与签名状态分别记录。
 
 1.2 changes: per-series fit-window / keep-width picture modes; optional GitHub release notices without forced download or installation.
+
+十、Linux 播放优化与 App 取源恢复（2026-11-07）
+-----------------------------------------------
+本次修改优化 Linux 播放解码、VAAPI 兼容转码和下一集预取，并改进 App 取源失败后的
+会话恢复和并发处理。本修改版本整体继续采用 GNU General Public License v3.0。
