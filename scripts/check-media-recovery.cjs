@@ -125,6 +125,35 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.equal(calls,1,'切集提升复用同一在途任务，不重新取源');
     assert.ok(events.some(e=>e.phase==='reconnecting'),'提升后的恢复阶段回报给前台');
   });
+  await check('managed prefetch reports reconnecting and readiness belongs to the validated file', async () => {
+    const events = [];
+    let finish;
+    const h = harness(async (_vid, _series, options) => {
+      options.onStage('reconnecting');
+      return new Promise(resolve => { finish = () => resolve(info('/ok')); });
+    });
+    h.context.sendToRenderer = (channel, payload) => { if (channel === 'online-play-progress') events.push(payload); };
+    const contents = h.run('mainWindow = {webContents: {mainFrame: {}}}; mainWindow.webContents');
+    const event = { sender: contents, senderFrame: contents.mainFrame };
+    const descriptor = { vid: '2202', vidIndex: 2 };
+    const window = await h.handlers['set-playback-window']({}, { seriesId: '1', vidIndex: 1, episodes: [descriptor] });
+    assert.equal(window.success, true, window.error);
+    const request = h.handlers['prepare-online-play']({}, { ...descriptor, seriesId: '1', disk: true, prefetch: true, requestId: 'managed-pf' });
+    for (let i = 0; i < 30 && !finish; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(finish);
+    assert.ok(events.some(e => e.requestId === 'managed-pf' && e.phase === 'reconnecting'));
+    finish();
+    const prepared = await request;
+    assert.equal(prepared.success, true, prepared.error);
+    const inspect = (seriesId, vidIndex = 2) => h.handlers['episode-cache-status'](event, { seriesId, episodes: [{ ...descriptor, vidIndex }] });
+    assert.equal(inspect('1').items[2].cached, true);
+    assert.equal(inspect('1', 3).items[3], undefined);
+    assert.equal(inspect('2').items[2], undefined);
+    const file = h.run("playbackEntry('2202').filePath");
+    fs.utimesSync(file, new Date(0), new Date(0));
+    assert.equal(inspect('1').items[2], undefined, 'same-size modified files are not ready');
+    await h.handlers['release-online-play'](event, { streamId: prepared.streamId });
+  });
   await check('switching away aborts the old episode fetch signal before session updates',async()=>{
     let calls=0; const signals=[];
     const h=harness(async(_v,_s,o)=>{ calls++;

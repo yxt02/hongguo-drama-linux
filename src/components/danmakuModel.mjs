@@ -59,36 +59,78 @@ export function appendCommentPage(feed, data, settings) {
   if (feed.pages >= 500) { feed.hasMore = false; feed.notice = '已达到本次评论加载上限'; }
 }
 
+export function danmakuLayout({ height, settings, reducedMotion, bottomInset = 76 }) {
+  const top = 12;
+  const lineHeight = settings.fontSize + 12;
+  const bottom = Math.min(height - bottomInset, height * ({ quarter: 0.25, half: 0.5, full: 1 }[settings.area] ?? 0.5));
+  return { top, lineHeight, lanes: reducedMotion ? 1 : Math.max(1, Math.floor((bottom - top) / lineHeight)) };
+}
+
+export function resizeDanmaku(state, before, after) {
+  if (after.width < 40 || after.height < 60) return false;
+  const { top, lineHeight, lanes } = danmakuLayout(after);
+  const placed = [];
+  for (const item of state.items) {
+    const x = after.reducedMotion ? 12 : after.width - (before.width - item.x) / (before.width + item.width) * (after.width + item.width);
+    const lane = Array.from({ length: lanes }, (_, offset) => (item.lane + offset) % lanes).find(index =>
+      !placed.some(other => other.lane === index && x < other.x + other.width + 24 && x + item.width + 24 > other.x));
+    if (lane === undefined) continue; // 缩小后放不下的条目才移除，保留时间光标与可见弹幕。
+    Object.assign(item, { x, lane, y: top + lane * lineHeight });
+    placed.push(item);
+  }
+  state.items = placed;
+  return true;
+}
+
+// Only fully departed comments enter the replay queue; active comments are never cloned.
+export function retireDanmaku(state, reducedMotion) {
+  state.replayQueue ??= [];
+  state.items = state.items.filter(item => {
+    if (reducedMotion ? item.age < 6 : item.x + item.width > 0) return true;
+    if (!reducedMotion && !state.replayQueue.some(old => old.content === item.content)) state.replayQueue.push(item);
+    return false;
+  });
+}
+
+export function takeDanmakuReplay(state, options, pending = 0, currentTime = Infinity) {
+  const { settings, reducedMotion } = options;
+  if (reducedMotion) return undefined;
+  const { lanes } = danmakuLayout(options);
+  const target = { sparse: 1, normal: 3, dense: Math.max(6, lanes * 2) }[settings.density];
+  if (state.items.length + pending >= target) return undefined;
+  const index = state.replayQueue.findIndex(item =>
+    (!item.entry || item.entry.time <= currentTime) && !commentIsBlocked(item.content, settings) &&
+    !state.items.some(active => active.content === item.content));
+  return index < 0 ? undefined : state.replayQueue.splice(index, 1)[0];
+}
+
 // One comment per lane prevents long comments catching shorter ones; all lanes share one clock.
 export function advanceDanmaku(state, comments, elapsed, { width, height, settings, reducedMotion, bottomInset = 76 }) {
   if (!(elapsed > 0) || !comments.length || width < 40 || height < 60) return false;
   const delta = Math.min(elapsed, 0.25);
-  const lineHeight = settings.fontSize + 12;
-  const top = 12;
-  const bottom = Math.min(height - bottomInset, height * ({ quarter: 0.25, half: 0.5, full: 1 }[settings.area]));
-  const lanes = reducedMotion ? 1 : Math.max(1, Math.min({ sparse: 1, normal: 3, dense: 6 }[settings.density], Math.floor((bottom - top) / lineHeight)));
+  const { lineHeight, top, lanes } = danmakuLayout({ height, settings, reducedMotion, bottomInset });
   const before = state.items.length;
   for (const item of state.items) { item.age += delta; if (!reducedMotion) item.x -= 85 * settings.speed * delta; }
-  state.items = state.items.filter(item => reducedMotion ? item.age < 6 : item.x + item.width > 0);
+  retireDanmaku(state, reducedMotion);
   let changed = before !== state.items.length;
   state.cooldown = Math.max(0, state.cooldown - delta);
-  const laneGap = lanes > 1 ? Math.max(lineHeight, (bottom - top - lineHeight) / (lanes - 1)) : 0;
   const lane = Array.from({ length: lanes }, (_, index) => index).find(index =>
-    !state.items.some(item => item.lane === index || Math.abs(item.y - (top + index * laneGap)) < lineHeight));
-  if (state.cooldown === 0 && lane !== undefined && state.cursor < comments.length) {
+    !state.items.some(item => item.lane === index || Math.abs(item.y - (top + index * lineHeight)) < lineHeight));
+  if (state.cooldown === 0 && lane !== undefined) {
     let content = '';
     while (state.cursor < comments.length) {
       const comment = comments[state.cursor++];
       const full = typeof comment === 'string' ? comment : comment.content;
       if (!commentIsBlocked(full, settings)) { content = full; break; }
     }
+    if (!content) content = takeDanmakuReplay(state, { width, height, settings, reducedMotion, bottomInset })?.content;
     if (!content) return changed;
     const chars = Array.from(content);
     const text = chars.length > 80 ? chars.slice(0, 79).join('') + '…' : content;
     const textWidth = (Array.from(text).length + 1) * settings.fontSize;
     const x = reducedMotion ? 12 : state.nextId === 0 ? Math.max(12, width - textWidth - 12) : width;
-    state.items.push({ id: state.nextId++, text, content, lane, x, y: top + lane * laneGap, width: textWidth, age: 0 });
-    state.cooldown = reducedMotion ? 6 : { sparse: 3, normal: 1.8, dense: 0.9 }[settings.density];
+    state.items.push({ id: state.nextId++, text, content, lane, x, y: top + lane * lineHeight, width: textWidth, age: 0 });
+    state.cooldown = reducedMotion ? 6 : { sparse: 0.9, normal: 0.5, dense: 0.25 }[settings.density];
     changed = true;
   }
   return changed;

@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   getPublicDetails: (seriesId, vid) => ipcRenderer.invoke('get-public-details', seriesId, vid),
   getEpisodeComments: options => ipcRenderer.invoke('get-episode-comments', options),
+  getEpisodeDanmaku: options => ipcRenderer.invoke('get-episode-danmaku', options),
   setStealthMode: enabled => ipcRenderer.invoke('set-stealth-mode', enabled),
   onStealthState: cb => {
     const listener = (_event, state) => cb(state);
@@ -72,6 +73,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('online-play-progress', listener);
   },
 
+  // 分集就绪状态（已校验的播放缓存 / 兼容文件）
+  episodeCacheStatus: (payload) => ipcRenderer.invoke('episode-cache-status', payload),
+
   // 兼容模式（HEVC -> H.264 转码，解决「黑屏有声」）
   transcodeForPlayback: (payload) => ipcRenderer.invoke('transcode-for-playback', payload),
   cancelTranscodeForPlayback: (payload) => ipcRenderer.invoke('cancel-transcode-for-playback', payload),
@@ -103,8 +107,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSeriesEpisodes: (seriesId) => ipcRenderer.invoke('get-series-episodes', seriesId),
   downloadSingleEpisode: (seriesId, vidIndex, quality) =>
     ipcRenderer.invoke('download-single-episode', seriesId, vidIndex, quality),
-  savePlaybackPosition: (seriesId, vidIndex, currentTime) =>
-    ipcRenderer.invoke('save-playback-position', seriesId, vidIndex, currentTime),
+  savePlaybackPosition: (seriesId, vidIndex, currentTime, watchedEpisode) =>
+    ipcRenderer.invoke('save-playback-position', seriesId, vidIndex, currentTime, watchedEpisode),
   getPlaybackPosition: (seriesId) => ipcRenderer.invoke('get-playback-position', seriesId),
 
   // 观看记录
@@ -152,6 +156,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAlwaysOnTop: (value) => ipcRenderer.invoke('set-always-on-top', value),
   setEpisodePanelOpen: (value) => ipcRenderer.invoke('set-episode-panel-open', value),
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  setPlaybackPrefetchLevel: value => ipcRenderer.invoke('set-playback-prefetch-level', value),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   onStorageError: (cb) => {
     const listener = (_e, data) => cb(data);

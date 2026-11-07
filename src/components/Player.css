@@ -678,3 +678,174 @@
 .player-download-quality { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .player-download-quality .input-field { width: auto; max-width: 100%; min-height: 31px; padding: 5px 8px; font-size: 12px; }
 .player-download-quality-hint { flex-basis: 100%; margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+
+/* ===== 选集工具栏：下一集摘要 · 跳到第 N 集 · 预缓存档位 ===== */
+.player-episode-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.player-episode-toolbar .portrait-episode-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+}
+.ep-next-summary {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ep-jump { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.ep-jump .input-field { width: 108px; min-height: 30px; padding: 4px 8px; font-size: 12px; }
+.ep-jump-error { color: var(--danger); font-size: 11.5px; max-width: 180px; }
+.prefetch-level-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.prefetch-level-control .input-field { width: auto; min-height: 30px; padding: 4px 8px; font-size: 12px; }
+.prefetch-cache-size { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
+
+/* ===== 分集状态标记：已看过 / 预缓存就绪 / 准备中 ===== */
+.ep-watched-dot {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  opacity: 0.75;
+  z-index: 2;
+}
+.ep-watched .ep-num { opacity: 0.85; }
+.ep-ready-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--success-border, rgba(46, 160, 67, 0.4));
+  background: var(--success);
+  opacity: 0.85;
+  z-index: 2;
+}
+.ep-prep-mark {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  z-index: 2;
+}
+.ep-prep-mark-failed { background: var(--danger); }
+.ep-prep-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  min-width: 22%;
+  background: var(--accent);
+  opacity: 0.55;
+  z-index: 1;
+  animation: ep-prep-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ep-prep-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.7; } }
+.ep-prep-failed { border-color: var(--danger-border); }
+
+/* ===== 跨季续播提示 ===== */
+.season-next-cta {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 26px;
+  border-radius: 12px;
+  background: var(--bg-elevated, rgba(20, 22, 28, 0.92));
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  color: var(--text-primary);
+}
+.season-next-cta p { margin: 0; font-weight: 600; }
+.season-next-sub { font-size: 12px; color: var(--text-secondary); }
+.season-flash { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; transition: outline-color 0.3s; }
+
+/* ===== 应用内全屏 ===== */
+.player-stage.player-app-fill {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  z-index: 60;
+  border-radius: 0;
+  background: #000;
+  aspect-ratio: auto;
+}
+body.player-app-fill .player-header,
+body.player-app-fill .player-series-row,
+body.player-app-fill .player-season-switcher,
+body.player-app-fill .series-picker,
+body.player-app-fill .player-episode-panel,
+body.player-app-fill .community-panel,
+body.player-app-fill .app-layout .sidebar,
+body.player-app-fill .window-toolbar,
+body.player-app-fill .compact-navigation,
+body.player-app-fill .app-update-notice { display: none !important; }
+body.player-app-fill .main-content { padding: 0 !important; }
+
+/* ===== 舞台抽屉（选集 / 信息） ===== */
+.stage-drawer {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  right: 12px;
+  z-index: 6;
+  width: min(360px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated, #1c1f27);
+  color: var(--text-primary);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.stage-drawer-overlay {
+  background: rgba(12, 14, 18, 0.94);
+}
+.stage-drawer-side {
+  background: rgba(18, 20, 26, 0.88);
+  backdrop-filter: blur(6px);
+}
+.stage-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.stage-drawer-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; min-height: 0; flex: 1; overflow-y: auto; }
+.stage-drawer-body .player-episodes { max-height: none; flex: 1; }
+.stage-drawer-body .ep-jump { margin-left: 0; flex-wrap: wrap; }
+.stage-drawer-summary { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.stage-drawer-seasons { border-top: 1px solid var(--border); padding-top: 8px; }
+.stage-info-list { margin: 0; padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.stage-info-row { display: flex; gap: 12px; font-size: 12.5px; line-height: 1.55; }
+.stage-info-row dt { flex: 0 0 64px; color: var(--text-tertiary); }
+.stage-info-row dd { margin: 0; flex: 1; overflow-wrap: anywhere; color: var(--text-primary); }

@@ -77,6 +77,18 @@ async function check(name, fn) {
     assert.equal(history[0].vid_index, 2);
     assert.equal(history[0].currentTime, 17.5);
   });
+  await check('legacy watched episode survives saving a different episode and a seek alone is unmarked', async () => {
+    const previous = store.getPlayback();
+    store.savePlayback({ [sid]: { vid_index: 2, currentTime: 17.5, watched: true, updatedAt: Date.now() } });
+    assert.equal((await ipc('save-playback-position', sid, 1, 43, false)).success, true);
+    let position = await ipc('get-playback-position', sid);
+    assert.equal(position.currentTime, 43);
+    assert.deepEqual(clone(position.watched_indexes), [2]);
+    await ipc('save-playback-position', sid, 3, 1, true);
+    position = await ipc('get-playback-position', sid);
+    assert.deepEqual(clone(position.watched_indexes), [2, 3]);
+    store.savePlayback(previous);
+  });
   await check('manual refresh updates stored episodes and preserves acknowledged updates', async () => {
     store.saveSettings({ root, watch_updates_enabled: false, watch_sequels_enabled: true });
     await ipc('save-playback-position', sid, 2, 12);

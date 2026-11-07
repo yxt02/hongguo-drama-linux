@@ -3,6 +3,8 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const checks = [
   "../src/native/playback-device.test.cjs",
+  "../src/native/episode-comments.test.cjs",
+  "../src/components/__tests__/comment-danmaku.test.mjs",
   "../src/native/hongguo-search.test.cjs",
   "../src/native/hongguo-app-search.test.cjs",
   "../src/native/hongguo-app-new.test.cjs",
@@ -26,6 +28,7 @@ const checks = [
   "check-series-decode.cjs",
   "check-compat-lifecycle.cjs",
   "check-player-resume.cjs",
+  "check-watch-history-integration.cjs",
   "check-player-fallback.cjs",
   "check-player-navigation.cjs",
   "check-player-download-state.cjs",

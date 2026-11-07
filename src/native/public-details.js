@@ -32,6 +32,15 @@ function parsePublicDetails(html, seriesId, vid = '') {
     sourceUrl: vid ? `${SITE}/player/${seriesId}/${vid}` : `${SITE}/detail?series_id=${seriesId}` };
 }
 
+function isUnpublishedEpisodeRedirect(response, url) {
+  if (response?.status !== 302 || !response.headers?.location) return false;
+  try {
+    const target = new URL(response.headers.location, url);
+    return target.origin === SITE && target.pathname === new URL(url).pathname
+      && target.searchParams.has('pc_locked_episode');
+  } catch (_) { return false; }
+}
+
 async function fetchPublicDetails(seriesId, vid = '') {
   seriesId = String(seriesId || '');
   vid = String(vid || '');
@@ -50,6 +59,9 @@ async function fetchPublicDetails(seriesId, vid = '') {
       if (cache.size > 64) cache.delete(cache.keys().next().value);
       return data;
     } catch (error) {
+      if (vid && isUnpublishedEpisodeRedirect(error.response, url)) {
+        return { success: false, sourceUrl: url, code: 'EPISODE_COMMENTS_UNAVAILABLE', error: '官网未公开本集评论' };
+      }
       return { success: false, sourceUrl: url, error: ['ECONNABORTED', 'ERR_CANCELED'].includes(error.code)
         ? '公开评论加载超时，请重试' : error.response ? `公开评论加载失败（HTTP ${error.response.status}）` : error.message };
     } finally { pending.delete(url); }

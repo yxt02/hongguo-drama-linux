@@ -11,6 +11,8 @@ const videoEnhancementStub = {
 const shortcutSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/shortcuts.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const decodeWatchSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/decodeWatch.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/Player.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
+const episodeStatusSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/episodeStatus.mjs'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
+const episodeListSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/EpisodeList.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
 
 function mount({ local = false, saved = null, transcode, backgroundTranscode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
   props = { setEpisodesOpen() {}, ...props };
@@ -37,7 +39,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
       return { getContext: () => null };
     } };
   let cursor = 0, tree, timerId = 0, oldSrc = '', oldKey;
-  let transcodeProgress;
+  let transcodeProgress, onlineProgress;
   const media = { currentTime: 0, duration: 100, readyState: 0, videoWidth: 640, paused: false,
     play: async () => {
       mediaCalls.play++;
@@ -68,7 +70,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
     getSeriesList: async () => [{ series_id: seriesId }],
     getSeriesEpisodes: async () => ({ success: true, data: { series_id: seriesId, series_title: '测试剧', total: episodeCount, episodes } }),
     getPlaybackPosition: async () => saved,
-    savePlaybackPosition: async (...args) => saves.push(args),
+    savePlaybackPosition: async (...args) => { saves.push(args); return { success: true }; },
     setPlaybackWindow: async p => { windows.push(p); return { success: true }; },
     prepareOnlinePlay: async p => { prepares.push(p); return prepare ? prepare(p) : { success: true, url: `hongguo-stream://mock-${prepares.length}` }; },
     transcodeForPlayback: async p => {
@@ -77,8 +79,10 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
     },
     cancelTranscodeForPlayback: async p => { structuredClone(p); cancelled.push(p); },
     onTranscodeProgress: fn => { transcodeProgress = fn; return () => { transcodeProgress = null; }; },
+    onOnlinePlayProgress: fn => { onlineProgress = fn; return () => { onlineProgress = null; }; },
     getSettings: async () => ({ compat_mode: true, playback_decode_mode: 'auto', ...settings }),
     saveSettings: async s => { settingsSaved.push(s); return { success: true }; },
+    setPlaybackPrefetchLevel: async value => { settingsSaved.push({ playback_prefetch_level: value }); return { success: true }; },
     releaseOnlinePlay: p => { structuredClone(p); releases.push(p); return Promise.resolve(); },
     compatCacheStatus: async () => ({ success: true, files: 1, bytes: 10 }),
     clearCompatCache: async () => ({ success: true, count: 1 }),
@@ -93,8 +97,13 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
   vm.runInNewContext(shortcutSource, { module: shortcutModule, exports: shortcutModule.exports, window, Event });
   const decodeWatchModule = { exports: {} };
   vm.runInNewContext(decodeWatchSource, { module: decodeWatchModule, exports: decodeWatchModule.exports, window });
+  const episodeStatusModule = { exports: {} };
+  vm.runInNewContext(episodeStatusSource, { module: episodeStatusModule, exports: episodeStatusModule.exports });
+  const episodeListModule = { exports: {} };
+  vm.runInNewContext(episodeListSource, { module: episodeListModule, exports: episodeListModule.exports,
+    require: name => name === 'react' ? react : name === './episodeStatus.mjs' ? episodeStatusModule.exports : { Check: () => null } });
   const setTimer = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
-  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === '../decodeWatch' ? decodeWatchModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
+  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === '../decodeWatch' ? decodeWatchModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : n === './episodeStatus.mjs' ? episodeStatusModule.exports : n === './EpisodeList' ? episodeListModule.exports : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
   context.exports = context.module.exports;
   vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const walk = n => { if (!n || typeof n !== 'object') return; out.push(n); n.children?.forEach(walk); }; walk(tree); return out; };
@@ -130,8 +139,9 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
     decodeTick: () => { const timer = [...timers.values()].find(t => t.delay === 900); timer?.fn(); return !!timer; },
     flushBatched: async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); render(); },
     transcodeProgress: payload => transcodeProgress?.(payload),
+    onlineProgress: payload => onlineProgress?.(payload),
     button: label => find(n => n.type === 'button' && text(n).includes(label)),
-    episode: n => find(x => x.props['aria-label'] === `第 ${n} 集`).props.onClick(),
+    episode: n => find(x => typeof x.props['aria-label'] === 'string' && x.props['aria-label'].startsWith(`第 ${n} 集`)).props.onClick(),
     error: code => find(n => n.type === 'video').props.onError({ currentTarget: Object.assign(media, { error: { code } }) }),
     unmount: () => cleanups.forEach(fn => fn?.()) };
 }
@@ -165,6 +175,59 @@ if (require.main === module) (async () => {
     assert.ok(ui.saves.some(p => p[1] === 2 && p[2] === 1.2), 'hide must bypass periodic save threshold');
     assert.equal(ui.events.has('keydown'), false, 'hidden player must not capture keys');
     assert.equal([...ui.timers.values()].some(t => t.delay === 2000), false, 'hidden idle detail polling must stop'); ui.unmount();
+  });
+  await test('next episode reports real recovery and late progress cannot revive a cancelled prefetch', async () => {
+    let complete;
+    const ui = mount({ episodeCount: 3, props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
+      prepare: p => p.prefetch ? new Promise(resolve => { complete = resolve; }) : { success: true, url: 'mock:first' } });
+    await ui.flush(); ui.metadata(); await ui.flush();
+    const request = ui.prepares.find(p => p.prefetch);
+    assert.equal(request.vidIndex, 2);
+    const summary = () => ui.find(n => n.props.className === 'ep-next-summary').children.join('');
+    ui.onlineProgress({ ...request, phase: 'reconnecting' }); ui.render();
+    assert.match(summary(), /第 2 集 · 正在重连/);
+    ui.media.pause();
+    ui.find(n => n.props['aria-label'] === '预缓存档位').props.onChange({ target: { value: 'off' } });
+    await ui.flush();
+    assert.ok(ui.releases.some(p => p.requestId === request.requestId));
+    ui.onlineProgress({ ...request, phase: 'downloading', total: 100, percent: 22 });
+    complete({ success: false, error: 'cancelled' }); await ui.flush();
+    assert.match(summary(), /第 2 集 · 播放时准备/);
+    assert.equal(ui.prepares.filter(p => p.prefetch).length, 1);
+    assert.equal(ui.settingsSaved.at(-1).playback_prefetch_level, 'off');
+    ui.unmount();
+  });
+  await test('explicit episode selection preserves watched marks without treating a seek as playback', async () => {
+    const ui = mount({ local: true, saved: { vid_index: 1, currentTime: 12, watched_indexes: [1] },
+      props: { target: { seriesId: 'A', vidIndex: 2, ts: 1 } } });
+    await ui.flush(); ui.metadata();
+    const media = () => ui.find(n => n.type === 'video').props;
+    assert.equal(ui.media.currentTime, 0);
+    media().onSeeking(); ui.media.currentTime = 20;
+    media().onTimeUpdate({ currentTarget: ui.media }); media().onSeeked({ currentTarget: ui.media });
+    assert.ok(!ui.saves.some(args => args[1] === 2 && args[3]));
+    ui.media.currentTime += 0.5; media().onTimeUpdate({ currentTarget: ui.media });
+    await ui.flush();
+    assert.ok(ui.find(n => n.props['aria-label']?.includes('第 1 集，已看过')));
+    assert.ok(ui.find(n => n.props['aria-label']?.includes('第 2 集，已看过')));
+    ui.unmount();
+  });
+  await test('finishing the final episode offers next-season resume at its own saved position', async () => {
+    const next = { series_id: 'B', number: 2 };
+    const ui = mount({ episodeCount: 1, props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } }, apiOverrides: {
+      getSeriesList: async () => [{ series_id: 'A' }, { series_id: 'B' }],
+      getSeriesEpisodes: async sid => ({ success: true, data: { series_id: sid, series_title: '测试剧', total: 1,
+        episodes: [{ vid: sid + '-episode', vid_index: 1, status: 'completed', fileUrl: 'file:///' + sid + '.mp4' }] } }),
+      getPlaybackPosition: async sid => sid === 'B' ? { vid_index: 1, currentTime: 27 } : null,
+      getSeriesSeasons: async () => ({ success: true, data: { currentNumber: 1, seasons: [next], related: [next] } }),
+    } });
+    await ui.flush(); ui.metadata();
+    ui.find(n => n.type === 'video').props.onEnded(); await ui.flush();
+    const button = ui.button('继续第 2 季');
+    assert.ok(button);
+    await button.props.onClick(); await ui.flush(); ui.metadata();
+    assert.equal(ui.media.currentTime, 27);
+    ui.unmount();
   });
   await test('online decoding error auto-falls back once and retains time', async () => {
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } } }); await ui.flush(); ui.metadata(); ui.media.currentTime = 27;

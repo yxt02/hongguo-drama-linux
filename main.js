@@ -37,6 +37,7 @@ const { createEpisodePanelController } = require('./src/native/episode-panel');
 const { availableRelease, releasesApi } = require('./src/native/app-update');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
+const { fetchDanmaku, setDeviceIdentityFile } = require('./src/native/danmaku');
 const mediaAccess = require('./src/native/media-access').createMediaAccess(process.env.VITE_DEV_SERVER_URL);
 const APP_VERSION = app.getVersion() || '1.0.0';
 const isLinux = process.platform === 'linux';
@@ -191,6 +192,8 @@ function getDefaultSettings() {
     download_quality: 'auto',
     playback_quality: 'auto',
     playback_decode_mode: isLinux ? 'auto' : 'h264',
+    // 连播预缓存档位：off=播放时按需准备 · next=仅下一集 · next2=后两集（Linux 播放器默认）
+    playback_prefetch_level: 'next2',
     custom_sources: [],
     // 看完一集后自动删除本地文件（边看边清，避免占用磁盘）
     auto_delete_watched: false,
@@ -1770,12 +1773,12 @@ ipcMain.handle('get-series-episodes', async (event, seriesId) => {
 });
 
 // 断点续播
-ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, currentTime) => {  try {
+ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, currentTime, watchedEpisode) => {  try {
     const map = store.getPlayback() || {};
     const sid = String(seriesId);
     const series = seriesRegistry.find(item => String(item.series_id) === sid);
     if (!series) return { success: false, error: '未找到短剧档案' };
-    map[sid] = watchHistory.recordPlayback(map[sid], series, Number(vidIndex), Number(currentTime));
+    map[sid] = watchHistory.recordPlayback(map[sid], series, Number(vidIndex), Number(currentTime), undefined, watchedEpisode);
     store.savePlayback(map);
     return { success: true };
   } catch (error) {
@@ -1784,8 +1787,8 @@ ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, curre
 });
 
 ipcMain.handle('get-playback-position', async (event, seriesId) => {
-  const map = store.getPlayback() || {};
-  return map[String(seriesId)] || null;
+  const record = store.getPlayback()?.[String(seriesId)];
+  return record ? { ...record, watched_indexes: watchHistory.watchedIndexes(record) } : null;
 });
 
 /**
@@ -2330,6 +2333,52 @@ ipcMain.handle('set-playback-window', (_event, payload) => {
     return { success: true };
   } catch (error) { return { success: false, error: error.message }; }
 });
+
+function matchingPlaybackFile(file, size, mtime) {
+  try {
+    const stat = fs.statSync(file);
+    return stat.isFile() && size > 0 && stat.size === size && stat.mtimeMs === mtime;
+  } catch (_) { return false; }
+}
+
+function registeredPlaybackInput(vid, seriesId) {
+  return downloadTasks.find(task => task.status === 'completed' && String(task.hongguoInfo?.vid) === String(vid)
+    && String(task.hongguoInfo?.series_id) === String(seriesId) && task.savePath && fs.existsSync(task.savePath));
+}
+
+// Ready means the current file and, when required, its matching compatibility output can be reused.
+ipcMain.handle('episode-cache-status', (event, payload = {}) => {
+  if (!lifecycleRequestAllowed(event)) return { success: false, error: '窗口请求无效' };
+  try {
+    const { seriesId, quality = 'auto', episodes = [] } = payload || {};
+    if (typeof seriesId !== 'string' || !seriesId) throw new Error('缺少剧集信息');
+    const normalized = normalizeDownloadQuality(quality);
+    if (!Array.isArray(episodes) || episodes.length > 500 || episodes.some(ep => typeof ep?.vid !== 'string' || !ep.vid
+      || !Number.isInteger(ep.vidIndex) || ep.vidIndex < 1)) throw new Error('分集列表无效');
+    loadPlaybackCache();
+    const items = {};
+    for (const { vid, vidIndex } of episodes) {
+      if (!withinPlaybackWindow({ vid, seriesId, quality: normalized })) continue;
+      const entry = onlineCache.get(playbackCache.cacheKey(vid, normalized));
+      const output = compatPathFor(seriesId, vidIndex, normalized);
+      const manual = registeredPlaybackInput(vid, seriesId);
+      let manualIdentity;
+      try { if (manual) manualIdentity = playbackCache.fileIdentity(manual.savePath); } catch (_) {}
+      const cached = entry?.complete && entry.seriesId === seriesId && entry.vidIndex === vidIndex
+        && entry.manualInput === manualIdentity && matchingPlaybackFile(entry.filePath, entry.size, entry.fileMtime);
+      let compatible = false;
+      try {
+        const metadata = JSON.parse(fs.readFileSync(output + '.json', 'utf8'));
+        const useManual = normalized === 'auto' && manualIdentity;
+        const input = useManual || (cached ? playbackCache.fileIdentity(entry.filePath) : null);
+        const identity = JSON.stringify([vid, normalized, input, useManual ? null : entry?.mediaSource || null]);
+        compatible = !!input && metadata.identity === identity && matchingPlaybackFile(output, metadata.size, metadata.mtime);
+      } catch (_) {}
+      if (cached || compatible) items[vidIndex] = { vid, cached: !!cached, compatible, codec: entry?.codec || '', directH264: entry?.directH264 === true };
+    }
+    return { success: true, quality: normalized, items };
+  } catch (error) { return { success: false, error: error.message }; }
+});
 async function probePlaybackFile(file, quality, task) {
   const probe = resolveFfmpeg('ffprobe');
   const info = probe ? await probeVideoInfo(probe, file, task) : null;
@@ -2414,8 +2463,7 @@ async function prepareManagedPlayback(payload) {
     streamId = randomUUID();
     const session = { vid: String(vid), cacheKey: key, requestId, requests: new Set(), entry: null };
     onlineSessions.set(streamId, session);
-    const manual = downloadTasks.find(task => task.status === 'completed' && task.savePath && fs.existsSync(task.savePath)
-      && String(task.hongguoInfo?.vid) === String(vid) && String(task.hongguoInfo?.series_id) === String(seriesId));
+    const manual = registeredPlaybackInput(vid, seriesId);
     let manualInput;
     try { if (manual) manualInput = playbackCache.fileIdentity(manual.savePath); } catch (_) {}
     const checked = !manual && /^(xifan|hema|custom):/.test(String(vid))
@@ -2445,18 +2493,21 @@ async function prepareManagedPlayback(payload) {
       if (job && (job.seriesId !== descriptor.seriesId || job.vidIndex !== vidIndex)) throw new Error('分集来源不匹配');
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
-        job = { ...descriptor, controller, disk: true, force, stageListeners: [] };
+        job = { ...descriptor, controller, disk: true, force, progress: null };
         const sourceRole = playbackSourceRole({ vid, seriesId, vidIndex, prefetch: payload.prefetch });
-        // 预取保持后台静默；前台等待（含预取提升为前台）时把取源恢复阶段回报给渲染器。
-        const onStage = stage => { for (const listener of job.stageListeners) { try { listener(stage); } catch (_) {} } };
+        const publish = (received, total, phase) => {
+          job.progress = { vid, seriesId, vidIndex, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase };
+          for (const active of onlineSessions.values()) if (active.job === job) {
+            sendToRenderer('online-play-progress', { ...job.progress, requestId: active.requestId });
+          }
+        };
+        const onStage = stage => publish(0, 0, stage);
         job.promise = Promise.resolve().then(async () => {
           let prepared = manual ? await prepareManualPlayback(manual.savePath, descriptor, controller.signal) : null;
           if (!prepared) prepared = await withMediaRecovery(String(vid), seriesId,
             { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal, sourceRole, onStage },
-            candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal, (received, total, phase) => {
-              for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
-                { vid, seriesId, vidIndex, requestId: active.requestId, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase: phase || 'downloading' });
-            }));
+            candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal,
+              (received, total, phase) => publish(received, total, phase || 'downloading')));
           Object.assign(prepared, { vidIndex, manualInput: prepared.manualInput ?? manualInput });
           if (controller.signal.aborted || !withinPlaybackWindow(prepared)) { disposeOnlineDisk(prepared); throw new Error('已取消播放'); }
           for (const active of onlineSessions.values()) if (active.job === job) active.entry = { ...prepared };
@@ -2469,16 +2520,14 @@ async function prepareManagedPlayback(payload) {
         onlinePreparing.set(key, job);
       }
       session.job = job;
-      if (!payload.prefetch && Array.isArray(job.stageListeners)) job.stageListeners.push(stage => {
-        for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
-          { vid, seriesId, vidIndex, requestId: active.requestId, received: 0, total: 0, percent: 0, phase: stage });
-      });
+      if (job.progress) sendToRenderer('online-play-progress', { ...job.progress, requestId });
       entry = await job.promise;
     }
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     session.entry = { ...entry }; entry.lastUsed = Date.now();
     return { success: true, url: STREAM_SCHEME + '://play/' + streamId, streamId, cached, size: entry.size,
-      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, directH264: entry.directH264 };
+      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality,
+      directH264: entry.directH264, mediaSource: entry.mediaSource || '' };
   } catch (error) {
     if (streamId) releaseOnlineSession(streamId);
     // 主备均空的终态结果单独标记：预取收到后停止推进本轮队列，前台用于准确提示。
@@ -3299,12 +3348,23 @@ ipcMain.handle('select-folder', async () => {
 
 ipcMain.handle('get-settings', async () => getCurrentSettings());
 
+ipcMain.handle('set-playback-prefetch-level', (event, value) => {
+  if (!lifecycleRequestAllowed(event) || !['off', 'next', 'next2'].includes(value)) {
+    return { success: false, error: '预缓存档位无效' };
+  }
+  try {
+    store.saveSettings({ ...store.getSettings(), playback_prefetch_level: value });
+    return { success: true };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
 ipcMain.handle('save-settings', async (event, settings) => {
   try {
     const wasCheckingUpdates = getCurrentSettings().app_updates_enabled !== false;
     const merged = { ...getDefaultSettings(), ...(settings || {}), custom_sources:getCurrentSettings().custom_sources };
     merged.download_quality = normalizeDownloadQuality(merged.download_quality);
     merged.playback_quality = normalizeDownloadQuality(merged.playback_quality);
+    merged.playback_prefetch_level = ['off', 'next', 'next2'].includes(merged.playback_prefetch_level) ? merged.playback_prefetch_level : 'next2';
     merged.auto_delete_watched = false; // Automatic cache cleanup never deletes manual downloads.
     store.saveSettings(merged);
     lifecycle?.refresh();
@@ -3888,6 +3948,13 @@ ipcMain.handle('get-episode-comments', async (event, options) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { success: false, error: 'Window unavailable' };
   return fetchEpisodeComments(options);
 });
+// 时间轴弹幕：请求与缓存按剧和分集关联；任何失败都不影响视频播放。
+ipcMain.handle('get-episode-danmaku', async (event, options) => {
+  if (!lifecycleRequestAllowed(event)) return { success: false, items: [], error: '窗口请求无效' };
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return fetchDanmaku(null);
+  const { seriesId, vid, fresh, limit } = options;
+  return fetchDanmaku({ seriesId, vid, fresh, limit });
+});
 
 ipcMain.handle('get-app-info', async () => ({
   version: APP_VERSION,
@@ -4057,6 +4124,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   if (process.argv.includes('--quit')) { app.quit(); return; }
   const dataFile = path.join(app.getPath('userData'), 'data.json');
   store.init(dataFile);
+  // 匿名客户端标识本机生成后持续复用，避免上游每次返回不同的弹幕子集。
+  setDeviceIdentityFile(path.join(app.getPath('userData'), 'danmaku-client.json'));
   loadDownloadTasks();
   loadSeriesRegistry();
   try { rebuildSeriesRegistryFromTasks(); } catch (_) { /* storage-error reports the failed write when the window opens. */ }

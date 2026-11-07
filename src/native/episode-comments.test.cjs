@@ -42,5 +42,15 @@ axios.get = async (url, options) => {
   assert.equal(calls, 1, 'reuse the existing bounded public-details cache');
   assert.equal((await fetchEpisodeComments({ seriesId, episodeId: '7503780577347128382' })).success, false,
     'a mismatched episode cannot leak the old comments');
+  const redirectedEpisode = '7503780577347128382';
+  axios.get = async (url, options) => {
+    assert.equal(options.maxRedirects, 0);
+    throw Object.assign(new Error('HTTP 302'), { response: { status: 302, headers: { location: `${url}?pc_locked_episode=1` } } });
+  };
+  const unavailable = await fetchEpisodeComments({ seriesId, episodeId: redirectedEpisode });
+  assert.equal(unavailable.success, true);
+  assert.deepEqual(unavailable.items, []);
+  assert.equal(unavailable.episode_id, redirectedEpisode);
+  assert.match(unavailable.notice, /官网未公开本集评论/);
   console.log('episode comments: validation, stable IDs, dedupe, source limits, cache and episode isolation passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

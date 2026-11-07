@@ -23,11 +23,24 @@ function listHistory(series, playback, showSequels = true) {
   }).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-function recordPlayback(previous, series, index, time, now = Date.now()) {
+function recordPlayback(previous, series, index, time, now = Date.now(), watchedEpisode = time > 0) {
   if (!Number.isInteger(index) || index < 1 || !Number.isFinite(time) || time < 0) throw new Error('无效的播放进度');
   const baseline = previous?.knownTotal ?? totalEpisodes(series);
-  return { ...previous, vid_index: index, currentTime: time, updatedAt: now, watched: true,
+  const watchedEpisodes = { ...previous?.watched_episodes };
+  if (!previous?.watched_episodes && isWatched(previous)) watchedEpisodes[previous.vid_index] = previous.updatedAt;
+  if (watchedEpisode) watchedEpisodes[index] = now;
+  return { ...previous, vid_index: index, currentTime: time, updatedAt: now, watched: true, watched_episodes: watchedEpisodes,
     knownTotal: baseline, acknowledgedTotal: previous?.acknowledgedTotal ?? baseline };
+}
+
+// 旧版只有按剧季的续播位置：升级时用它标记对应分集，其余分集实际播放后逐步补齐。
+function watchedIndexes(record) {
+  const watched = record?.watched_episodes && typeof record.watched_episodes === 'object' ? record.watched_episodes : null;
+  if (watched) {
+    const indexes = Object.keys(watched).map(Number).filter(index => Number.isInteger(index) && index > 0 && watched[index]);
+    return [...new Set(indexes)].sort((a, b) => a - b);
+  }
+  return isWatched(record) ? [record.vid_index] : [];
 }
 
 function applyEpisodeUpdate(record, oldSeries, freshSeries, now = Date.now()) {
@@ -90,4 +103,4 @@ function acknowledge(record, snapshot) {
     seenSequelIds: [...new Set([...(record.seenSequelIds || []), ...visibleIds.filter(id => knownIds.has(id))])] };
 }
 
-module.exports = { listHistory, recordPlayback, applyEpisodeUpdate, findSequels, sequelKeyword, acknowledge };
+module.exports = { listHistory, recordPlayback, watchedIndexes, applyEpisodeUpdate, findSequels, sequelKeyword, acknowledge };
