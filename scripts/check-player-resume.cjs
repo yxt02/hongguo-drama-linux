@@ -42,6 +42,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
     play: async () => {
       mediaCalls.play++;
       media.paused = false;
+      media.readyState = 4;
       const video = find(n => n.type === 'video');
       video?.props.onPlay?.({ currentTarget: media });
       if (!media.paused) video?.props.onPlaying?.({ currentTarget: media });
@@ -63,6 +64,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
   react.useCallback = (fn, deps) => react.useMemo(() => fn, deps);
   const episodes = Array.from({ length: episodeCount }, (_, i) => i + 1).map(n => ({ vid_index: n, vid: `v${n}`, locked: lockedIndexes.includes(n), status: local ? 'completed' : 'missing', ...(local ? { fileUrl: `file:///mock-${n}.mp4`, savePath: `/mock-${n}.mp4` } : {}) }));
   const api = {
+    platform: 'linux',
     getSeriesList: async () => [{ series_id: seriesId }],
     getSeriesEpisodes: async () => ({ success: true, data: { series_id: seriesId, series_title: '测试剧', total: episodeCount, episodes } }),
     getPlaybackPosition: async () => saved,
@@ -73,7 +75,7 @@ function mount({ local = false, saved = null, transcode, backgroundTranscode, pr
       if (p.background) { backgroundTranscodes.push(p); return backgroundTranscode ? backgroundTranscode(p) : { success:true, url:'file:///mock-background-' + p.vidIndex + '.mp4' }; }
       transcodes.push(p); return transcode ? transcode(p) : { success: true, url: 'file:///mock-compat.mp4' };
     },
-    cancelTranscodeForPlayback: async p => cancelled.push(p),
+    cancelTranscodeForPlayback: async p => { structuredClone(p); cancelled.push(p); },
     onTranscodeProgress: fn => { transcodeProgress = fn; return () => { transcodeProgress = null; }; },
     getSettings: async () => ({ compat_mode: true, playback_decode_mode: 'auto', ...settings }),
     saveSettings: async s => { settingsSaved.push(s); return { success: true }; },
@@ -206,8 +208,8 @@ if (require.main === module) (async () => {
     ui.episode(2); await ui.flush();
     assert.equal(ui.cancelled.at(-1).requestId, ui.transcodes[1].requestId);
     resolve({ success: true, url: 'file:///cached-compat.mp4' }); await ui.flush();
-    assert.equal(ui.transcodes.at(-1).vidIndex, 2);
-    assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///compatible-2.mp4', 'old result cannot replace the new episode in series compatibility mode');
+    assert.equal(ui.transcodes.at(-1).vidIndex, 1);
+    assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-2.mp4', 'old result cannot replace the new episode');
     ui.unmount();
   });
   await test('legacy disabled setting no longer disables automatic repair; manual retry rebuilds', async () => {

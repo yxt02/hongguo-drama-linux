@@ -1,22 +1,56 @@
-const assert=require('node:assert/strict');
-const {mount}=require('./check-player-resume.cjs');
-(async()=>{
-  const ui=mount({settings:{playback_decode_mode:undefined},props:{target:{seriesId:'A',vidIndex:1}}});
-  await ui.flush();assert.equal(ui.transcodes.length,1,'missing setting on existing install defaults to H.264');
-  assert.equal(ui.prepares.filter(p=>!p.prefetch).length,0,'never attempt original decoding first');
-  assert.ok(ui.button('本剧：兼容解码'));ui.metadata();ui.media.currentTime=23;
-  ui.episode(2);await ui.flush();assert.equal(ui.transcodes.at(-1).vidIndex,2);
-  ui.button('本剧：兼容解码').props.onClick();await ui.flush();
-  assert.ok(ui.button('本剧：自动解码'));
-  ui.episode(1);await ui.flush();assert.equal(ui.prepares.at(-1).vidIndex,1);
-  ui.button('本剧：自动解码').props.onClick();await ui.flush();assert.ok(ui.button('本剧：兼容解码'));ui.unmount();
-  const storage=new Map();
-  const first=mount({storage,local:true,settings:{playback_decode_mode:undefined}});await first.flush();
-  assert.equal(first.transcodes.length,1,'local originals also use H.264 compatibility');
-  first.button('本剧：兼容解码').props.onClick();await first.flush();first.unmount();
-  const again=mount({storage,settings:{playback_decode_mode:undefined},props:{target:{seriesId:'A',vidIndex:1}}});await again.flush();
-  assert.equal(again.transcodes.length,0,'explicit per-series automatic override survives restart');again.unmount();
-  const other=mount({storage,seriesId:'B',settings:{playback_decode_mode:undefined},props:{target:{seriesId:'B',vidIndex:1}}});await other.flush();
-  assert.equal(other.transcodes.length,1,'auto override does not affect other dramas');other.unmount();
-  console.log('PASS default H.264 online/local, first-frame routing, next episodes, per-series override and restart');
-})().catch(e=>{console.error(e);process.exitCode=1});
+const assert = require('node:assert/strict');
+const { mount } = require('./check-player-resume.cjs');
+const target = { target: { seriesId: 'A', vidIndex: 1 } };
+
+(async () => {
+  const automatic = mount({ settings: { playback_decode_mode: undefined }, props: target });
+  await automatic.flush();
+  assert.equal(automatic.transcodes.length, 0);
+  assert.equal(automatic.prepares.length, 1);
+  assert.ok(automatic.button('本剧：自动解码'));
+  automatic.unmount();
+
+  const local = mount({ local: true, settings: { playback_decode_mode: undefined } });
+  await local.flush();
+  assert.equal(local.transcodes.length, 0);
+  assert.equal(local.find(n => n.type === 'video').props.src, 'file:///mock-1.mp4');
+  local.unmount();
+
+  let readSettings;
+  const settings = new Promise(resolve => { readSettings = resolve; });
+  const storage = new Map(), savedMode = mount({ storage, local: true, props: target,
+    apiOverrides: { getSettings: () => settings } });
+  await savedMode.flush();
+  assert.equal(savedMode.transcodes.length, 0);
+  assert.equal(savedMode.find(n => n.type === 'video').props.src, undefined, 'wait for settings before loading the first source');
+  readSettings({ playback_decode_mode: 'h264' });
+  await savedMode.flush();
+  assert.equal(savedMode.transcodes.length, 1, 'explicit global H.264 governs first playback');
+  savedMode.button('本剧：兼容解码').props.onClick();
+  savedMode.unmount();
+
+  const restored = mount({ storage, settings: { playback_decode_mode: 'h264' }, props: target });
+  await restored.flush();
+  assert.equal(restored.transcodes.length, 0, 'explicit series auto overrides global H.264 after restart');
+  restored.unmount();
+
+  const h264 = mount({ settings: { playback_decode_mode: 'h264' }, props: target,
+    prepare: () => ({ success: true, url: 'hongguo-stream://h264', codec: 'h264', directH264: true }) });
+  await h264.flush();
+  assert.equal(h264.transcodes.length, 0, 'validated H.264 is reused even in compatibility mode');
+  assert.equal(h264.find(n => n.type === 'video').props.src, 'hongguo-stream://h264');
+  h264.metadata(); h264.media.currentTime = 16; h264.media.pause(); h264.error(3);
+  await h264.flush(); h264.metadata();
+  assert.equal(h264.transcodes[0].reason, 'decode-error');
+  assert.equal(h264.media.currentTime, 16);
+  assert.equal(h264.media.paused, true);
+  h264.unmount();
+
+  const otherPlatform = mount({ settings: { playback_decode_mode: undefined }, props: target,
+    apiOverrides: { platform: 'win32' } });
+  await otherPlatform.flush();
+  assert.equal(otherPlatform.transcodes.length, 1);
+  assert.equal(otherPlatform.prepares.length, 0);
+  otherPlatform.unmount();
+  console.log('PASS Linux default direct playback, saved settings, per-series override, validated H.264 and non-Linux default');
+})().catch(e => { console.error(e); process.exitCode = 1; });

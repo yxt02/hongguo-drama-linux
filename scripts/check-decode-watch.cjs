@@ -12,7 +12,7 @@ const mod = { exports: {} };
 vm.runInNewContext(source, { module: mod, exports: mod.exports });
 const {
   BLACK_SAMPLES_TO_FAIL, NO_PIC_SAMPLES_TO_FAIL, MIN_ADVANCE_SECONDS,
-  createDecodeGuard, createFrameSampler, isHevcCodec, probeHevcSupport, shouldTranscodeFirst,
+  createDecodeGuard, createFrameDecodeGuard, createFrameSampler, isHevcCodec, probeHevcSupport, shouldTranscodeFirst,
 } = mod.exports;
 
 // 32x18 RGBA canvas whose every pixel carries the given luma value.
@@ -212,6 +212,16 @@ const flatDoc = (luma, { readThrows = false, noCanvas = false } = {}) => ({
     }
     assert.equal(verdict, 'watch', 'streak too short in playback time must not fail');
     assert.equal(guard.verdict, null);
+  });
+
+  await test('presented frames win over stale decoder counters and large clock jumps reset evidence', () => {
+    const guard = createFrameDecodeGuard();
+    const sample = (currentTime, presented = 0) => ({ currentTime, presented, decoded: 0, videoWidth: 640 });
+    guard.push(sample(0));
+    for (let i = 1; i <= 12; i++) assert.equal(guard.push(sample(i, i)), 'healthy');
+    assert.equal(guard.push(sample(120, 12)), 'watch');
+    for (let i = 1; i < BLACK_SAMPLES_TO_FAIL; i++) assert.equal(guard.push(sample(120 + i, 12)), 'watch');
+    assert.equal(guard.push(sample(120 + BLACK_SAMPLES_TO_FAIL, 12)), 'fail-no-picture');
   });
 
   process.exitCode = failures ? 1 : 0;

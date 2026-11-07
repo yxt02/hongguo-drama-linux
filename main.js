@@ -29,6 +29,7 @@ const hongguo = require('./src/native/hongguo');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./src/native/download-quality');
 const { decryptInWorker } = require('./src/native/decrypt-worker.cjs');
 const playbackCache = require('./src/native/playback-cache');
+const { pickPlaybackVaapi } = require('./src/native/playback-vaapi');
 const store = require('./src/store');
 const watchHistory = require('./src/native/watch-history');
 const { fitWindowBounds } = require('./src/native/window-layout');
@@ -38,6 +39,7 @@ const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const mediaAccess = require('./src/native/media-access').createMediaAccess(process.env.VITE_DEV_SERVER_URL);
 const APP_VERSION = app.getVersion() || '1.0.0';
+const isLinux = process.platform === 'linux';
 
 const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
 const { createStealthController } = require('./src/native/stealth-window');
@@ -64,8 +66,16 @@ store.setErrorHandler?.(payload => {
 // 仍然不行的，由「兼容模式转码」兜底（见 transcodeForPlayback）。
 app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,PlatformHEVCEncoderSupport');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
-// 允许在无硬件解码时也尽量使用平台解码器
-app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder');
+// Linux VAAPI uses Chromium's direct video decoder.
+if (!isLinux) app.commandLine.appendSwitch('disable-features', 'UseChromeOSDirectVideoDecoder');
+// Prefer the EGL/OpenGL path for video decoding on Wayland.
+if (isLinux && process.env.WAYLAND_DISPLAY) {
+  const ozone = app.commandLine.getSwitchValue?.('ozone-platform') || 'auto';
+  if (['auto', 'wayland'].includes(ozone) && !app.commandLine.hasSwitch?.('use-gl') && !app.commandLine.hasSwitch?.('use-angle')) {
+    app.commandLine.appendSwitch('use-gl', 'angle');
+    app.commandLine.appendSwitch('use-angle', 'gl');
+  }
+}
 
 
 // ===== 在线播放：自定义流协议（内存缓存 + Range 支持）=====
@@ -180,7 +190,7 @@ function getDefaultSettings() {
     max_concurrent: 3,
     download_quality: 'auto',
     playback_quality: 'auto',
-    playback_decode_mode: 'h264',
+    playback_decode_mode: isLinux ? 'auto' : 'h264',
     custom_sources: [],
     // 看完一集后自动删除本地文件（边看边清，避免占用磁盘）
     auto_delete_watched: false,
@@ -2312,7 +2322,12 @@ async function probePlaybackFile(file, quality, task) {
   const info = probe ? await probeVideoInfo(probe, file, task) : null;
   if (!info || ![info.w, info.h, info.duration].every(n => Number.isFinite(n) && n > 0)) throw new Error('缓存视频不完整或缺少有效视频轨');
   if (!meetsDownloadQuality({ width: info.w, height: info.h }, quality)) throw new Error('片源未达到所选清晰度，未自动降级');
-  return { codec: info.vcodec || info.codec || '', width: info.w, height: info.h, actualQuality: Math.min(info.w, info.h) + 'p' };
+  return { codec: info.vcodec || info.codec || '', width: info.w, height: info.h,
+    actualQuality: Math.min(info.w, info.h) + 'p', directH264: isDirectH264(info) };
+}
+function isDirectH264(info) {
+  return info.codec === 'h264' && info.video?.pix_fmt === 'yuv420p'
+    && ['avc1', 'avc3'].includes(info.video.codec_tag_string) && (!info.audio || info.audioStream?.codec_name === 'aac');
 }
 async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress) {
   const directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(vid, quality)));
@@ -2358,17 +2373,18 @@ async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onPr
 async function prepareManualPlayback(original, descriptor, signal) {
   let directory;
   try {
+    const manualInput = playbackCache.fileIdentity(original);
     const info = await probePlaybackFile(original, descriptor.quality);
     if (signal.aborted) return null;
     directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(descriptor.vid, descriptor.quality)));
     const filePath = path.join(directory, 'video.mp4');
     await fsp.copyFile(original, filePath);
     const verified = await probePlaybackFile(filePath, descriptor.quality);
-    if (signal.aborted) throw new Error('已取消播放');
+    if (signal.aborted || manualInput !== playbackCache.fileIdentity(original)) throw new Error('原件已变化或播放已取消');
     const stat = await fsp.stat(filePath);
     if (stat.size > playbackCache.MAX_EPISODE_BYTES) throw new Error('单集超过自动缓存限制');
     return { ...descriptor, ...info, ...verified, filePath, size: stat.size, fileMtime: stat.mtimeMs,
-      complete: true, validated: true, mediaSource: 'manual', lastUsed: Date.now(), disk: { directory, readers: 0, managed: true },
+      complete: true, validated: true, mediaSource: 'manual', manualInput, lastUsed: Date.now(), disk: { directory, readers: 0, managed: true },
       source: /^custom:[^:]+/.exec(descriptor.vid)?.[0] || /^(xifan|hema):/.exec(descriptor.vid)?.[1] || 'hongguo' };
   } catch (_) { if (directory) await fsp.rm(directory, { recursive: true, force: true }); return null; }
 }
@@ -2387,6 +2403,8 @@ async function prepareManagedPlayback(payload) {
     onlineSessions.set(streamId, session);
     const manual = downloadTasks.find(task => task.status === 'completed' && task.savePath && fs.existsSync(task.savePath)
       && String(task.hongguoInfo?.vid) === String(vid) && String(task.hongguoInfo?.series_id) === String(seriesId));
+    let manualInput;
+    try { if (manual) manualInput = playbackCache.fileIdentity(manual.savePath); } catch (_) {}
     const checked = !manual && /^(xifan|hema|custom):/.test(String(vid))
       ? await hongguo.fetchPlayUrlSingle(vid, seriesId, { quality, preferQuality: true, force }) : null;
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
@@ -2394,6 +2412,11 @@ async function prepareManagedPlayback(payload) {
     if (!withinPlaybackWindow(descriptor)) throw new Error('该集已离开自动缓存范围');
     if (force) deleteOnlineCacheEntry(key);
     let entry = onlineCache.get(key);
+    if (entry && (entry.seriesId !== descriptor.seriesId || entry.vidIndex !== vidIndex
+      || (isLinux && entry.manualInput !== manualInput))) {
+      deleteOnlineCacheEntry(key);
+      entry = null;
+    }
     if (entry && (!entry.validated || !fs.existsSync(entry.filePath) || fs.statSync(entry.filePath).size !== entry.size || fs.statSync(entry.filePath).mtimeMs !== entry.fileMtime)) {
       session.entry = entry; // Pin the file while validation yields to cancellation/cleanup.
       try {
@@ -2406,6 +2429,7 @@ async function prepareManagedPlayback(payload) {
     const cached = !!entry;
     if (!entry) {
       let job = onlinePreparing.get(key);
+      if (job && (job.seriesId !== descriptor.seriesId || job.vidIndex !== vidIndex)) throw new Error('分集来源不匹配');
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
         job = { ...descriptor, controller, disk: true, force };
@@ -2417,7 +2441,7 @@ async function prepareManagedPlayback(payload) {
               for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
                 { vid, seriesId, vidIndex, requestId: active.requestId, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase: phase || 'downloading' });
             }));
-          Object.assign(prepared, { vidIndex });
+          Object.assign(prepared, { vidIndex, manualInput: prepared.manualInput ?? manualInput });
           if (controller.signal.aborted || !withinPlaybackWindow(prepared)) { disposeOnlineDisk(prepared); throw new Error('已取消播放'); }
           for (const active of onlineSessions.values()) if (active.job === job) active.entry = { ...prepared };
           if (onlinePreparing.get(key) === job) {
@@ -2433,7 +2457,7 @@ async function prepareManagedPlayback(payload) {
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     session.entry = { ...entry }; entry.lastUsed = Date.now();
     return { success: true, url: STREAM_SCHEME + '://play/' + streamId, streamId, cached, size: entry.size,
-      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality };
+      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, directH264: entry.directH264 };
   } catch (error) { if (streamId) releaseOnlineSession(streamId); return { success: false, error: error.message }; }
 }
 
@@ -2498,10 +2522,13 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
   }
 });
 
-ipcMain.handle('release-online-play', async (event, payload = {}) => {
+function releaseOnlineRequest(payload) {
   for (const [id, session] of [...onlineSessions]) {
     if ((payload.streamId && id === payload.streamId) || (payload.requestId && session.requestId === payload.requestId)) releaseOnlineSession(id);
   }
+}
+ipcMain.handle('release-online-play', async (_event, payload = {}) => {
+  releaseOnlineRequest(payload);
   return { success: true };
 });
 
@@ -2539,15 +2566,7 @@ function compatFileName(seriesId, vidIndex, quality = 'auto') {
 function compatPathFor(seriesId, vidIndex, quality = 'auto') {
   return path.join(getCompatDir(), compatFileName(seriesId, vidIndex, quality));
 }
-function compatIdentity(payload) {
-  let file = null;
-  const original = payload.filePath || playbackEntry(payload.vid, normalizeDownloadQuality(payload.quality))?.filePath;
-  if (original && fs.existsSync(original)) {
-    const stat = fs.statSync(original);
-    file = [path.resolve(original), stat.size, stat.mtimeMs];
-  }
-  return JSON.stringify([String(payload.vid || ''), normalizeDownloadQuality(payload.quality), file, /^(xifan|hema|custom):/.test(String(payload.vid)) ? null : 'app-hd-v1']);
-}
+const canReuseH264 = payload => !payload.force && ['compat-mode', 'prefetch'].includes(payload.reason);
 
 function compatCacheStatus() {
   const dir = getCompatDir();
@@ -2664,26 +2683,40 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
   if (!payload.seriesId || payload.vidIndex == null) return { success: false, error: '缺少剧集信息' };
   const key = compatPathFor(payload.seriesId, payload.vidIndex, payload.quality);
   const requestId = String(payload.requestId || randomUUID());
+  const inputKey = JSON.stringify([String(payload.vid || ''), payload.filePath || null,
+    isLinux ? onlineSessions.get(payload.streamId)?.entry?.filePath || null : null, !!payload.force, isLinux && canReuseH264(payload)]);
   const existing = compatRequests.get(requestId);
-  if (existing) return existing.key === key ? existing.promise : { success: false, error: '请求标识已用于其他剧集' };
+  if (existing) {
+    if (existing.key !== key || existing.job.inputKey !== inputKey) return { success: false, error: '请求标识已用于其他片源' };
+    if (!payload.background) existing.job.background = false;
+    return existing.promise;
+  }
   // Register before every await, including permission lookup and a cancelled predecessor.
   const previous = compatPreparing.get(key);
   let job = previous;
-  if (job && !job.cancelled && job.sourceVid !== String(payload.vid || '')) return { success: false, error: '该集已有不同来源的准备请求，请稍后重试' };
+  if (job && !job.cancelled && job.inputKey !== inputKey) {
+    if (isLinux && !payload.background && job.background) cancelCompatJob(job);
+    else return { success: false, error: '该集已有不同来源的准备请求，请稍后重试' };
+  }
+  const others = isLinux ? [...compatPreparing.values()].filter(other => other !== previous) : [];
+  if (payload.background && others.some(other => !other.cancelled && !other.background)) return compatCancelled();
+  if (!payload.background) for (const other of others) if (other.background) cancelCompatJob(other);
   if (!job || job.cancelled) {
-    job = { controller: new AbortController(), cancelled: false, requests: new Map(), sourceVid: String(payload.vid || ''),
+    job = { controller: new AbortController(), cancelled: false, requests: new Map(), inputKey, background: !!payload.background, sourceVid: String(payload.vid || ''),
       vid: String(payload.vid || ''), seriesId: String(payload.seriesId), vidIndex: Number(payload.vidIndex), quality: normalizeDownloadQuality(payload.quality) };
     const clearing = compatClearing;
     job.promise = Promise.resolve().then(async () => {
       if (previous) await previous.promise;
       if (clearing) await clearing;
-      if (job.cancelled || (payload.background && !withinPlaybackWindow(job))) return compatCancelled();
+      if (isLinux) await Promise.all(others.map(other => other.promise));
+      if (job.cancelled || (job.background && !withinPlaybackWindow(job))) return compatCancelled();
       return transcodeForPlayback(payload, job);
     }).catch(error => ({ success: false, error: error.message })).finally(() => {
       if (compatPreparing.get(key) === job) compatPreparing.delete(key);
     });
     compatPreparing.set(key, job);
   }
+  if (!payload.background) job.background = false;
   const request = { key, job, requestId, cancelled: false };
   job.requests.set(requestId, request);
   compatRequests.set(requestId, request);
@@ -2695,16 +2728,26 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
 });
 
 async function transcodeForPlayback(payload, job = { controller: new AbortController() }) {
-  let tmpInput, tmpOut, diskInput;
+  let tmpInput, tmpOut, tmpMetadata, diskInput, ownedRequestId;
   const signal = job.controller.signal;
   const checkCancelled = () => { if (signal.aborted) throw new Error('已取消转码'); };
   const abortPreparation = () => {
+    if (ownedRequestId) releaseOnlineRequest({ requestId: ownedRequestId });
     const child = job.child;
     if (!child) return;
     try { child.kill('SIGTERM'); } catch (_) {}
     const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 2000);
     timer.unref?.();
     child.once('close', () => clearTimeout(timer));
+  };
+  const { seriesId, vidIndex, filePath, force, vid } = payload;
+  const quality = normalizeDownloadQuality(payload.quality);
+  const reasons = ['compat-mode', 'prefetch', 'unsupported-hevc', 'no-picture', 'decode-error', 'repair-output', 'manual'];
+  const reason = reasons.includes(payload.reason) ? payload.reason : force ? 'manual' : 'compat-mode';
+  const started = Date.now();
+  let codec = 'unknown';
+  const log = (result, detail = '') => {
+    console.log(`[Compat] 第${Number(vidIndex)}集 reason=${reason} codec=${codec} quality=${quality} result=${result} elapsedMs=${Date.now() - started}${detail}`);
   };
   const reportProgress = data => {
     if (!job.requests) return sendToRenderer('transcode-progress', { ...data, requestId: payload.requestId });
@@ -2715,70 +2758,115 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
   signal.addEventListener('abort', abortPreparation, { once: true });
   try {
     checkCancelled();
-    const { seriesId, vidIndex, filePath, force } = payload || {};
-    if (!seriesId || vidIndex == null) return { success: false, error: '缺少剧集信息' };
-    if (!(filePath && fs.existsSync(filePath)) && (/^(xifan|hema|custom):/.test(String(seriesId)) || /^(xifan|hema|custom):/.test(String(payload.vid)))) {
+    checkCustomAccess(vid);
+    const out = compatPathFor(seriesId, vidIndex, quality);
+    const ffmpegPath = resolveFfmpeg('ffmpeg');
+    const ffprobePath = resolveFfmpeg('ffprobe');
+    let inputPath = filePath && fs.existsSync(filePath) ? filePath : null;
+    let streamId = isLinux ? payload.streamId : null;
+    let identity;
+    if (!inputPath && !streamId && (/^(xifan|hema|custom):/.test(String(seriesId)) || /^(xifan|hema|custom):/.test(String(vid)))) {
       const current = await hongguo.fetchEpisodeList(seriesId);
       checkCancelled();
       const episode = current.episodes.find(ep => Number(ep.vid_index) === Number(vidIndex));
-      if (!episode || (payload.vid && payload.vid !== episode.vid)) return { success: false, error: '分集来源不匹配' };
-      if (episode.locked) return { success: false, error: '该集已锁定，请在来源平台解锁' };
+      if (!episode || (vid && vid !== episode.vid)) throw new Error('分集来源不匹配');
+      if (episode.locked) throw new Error('该集已锁定，请在来源平台解锁');
     }
 
-    const quality = normalizeDownloadQuality(payload.quality);
-    const out = compatPathFor(seriesId, vidIndex, quality);
-    const identity = compatIdentity(payload);
-    const ffmpegPath = resolveFfmpeg('ffmpeg');
-    const ffprobePath = resolveFfmpeg('ffprobe');
-    if (!force && fs.existsSync(out)) {
+    async function cachedOutput() {
+      if (force || !fs.existsSync(out)) return null;
       try {
         const metadata = JSON.parse(fs.readFileSync(out + '.json', 'utf8'));
-        if (metadata.identity !== identity || metadata.size !== fs.statSync(out).size) throw new Error('片源已变化');
+        const stat = fs.statSync(out);
+        if (metadata.identity !== identity || metadata.size !== stat.size || (isLinux && metadata.mtime !== stat.mtimeMs)) return null;
         const info = await probePlaybackFile(out, quality, job);
         checkCancelled();
-        if (info.codec !== 'h264') throw new Error('兼容缓存编码无效');
-        fs.utimesSync(out, new Date(), new Date());
-        return { success: true, url: localPlayUrl(out), size: fs.statSync(out).size, cached: true, ...info };
-      } catch (error) {
-        checkCancelled();
-        try { fs.unlinkSync(out); } catch (_) {}
-        try { fs.unlinkSync(out + '.json'); } catch (_) {}
-      }
+        if (info.codec !== 'h264') return null;
+        if (!isLinux) fs.utimesSync(out, new Date(), new Date());
+        const encoder = /^(libx264|h264_[a-z0-9]+)$/.test(metadata.encoder || '') ? metadata.encoder : undefined;
+        log('cache-hit', encoder ? ' encoder=' + encoder : '');
+        return { success: true, url: localPlayUrl(out), size: stat.size, cached: true, encoder, ...info };
+      } catch (_) { checkCancelled(); return null; }
     }
 
-    if (!ffmpegPath) return { success: false, error: '未找到 ffmpeg，无法转码' };
-
-    // 1) 优先本地原件；强制重建时跳过在线缓存，重新获取输入。
-    let inputPath = filePath || null;
-    if (!inputPath || !fs.existsSync(inputPath)) {
-      const vid = payload.vid;
-      if (!vid) return { success: false, error: '既没有本地文件，也没有 vid' };
-      const cached = onlineCache.get(playbackCache.cacheKey(vid, quality)) || (!force && onlineCache.get(String(vid)));
+    if (!isLinux) {
+      const original = inputPath || playbackEntry(vid, quality)?.filePath;
+      const stat = original && fs.existsSync(original) ? fs.statSync(original) : null;
+      identity = JSON.stringify([String(vid || ''), quality,
+        stat ? [path.resolve(original), stat.size, stat.mtimeMs] : null,
+        /^(xifan|hema|custom):/.test(String(vid)) ? null : 'app-hd-v1']);
+      const hit = await cachedOutput();
+      if (hit) return hit;
+    }
+    if (isLinux && !inputPath && !streamId) {
+      ownedRequestId = randomUUID();
+      const prepared = await prepareManagedPlayback({ seriesId, vidIndex, vid, quality, requestId: ownedRequestId });
+      checkCancelled();
+      if (!prepared.success) throw new Error(prepared.error);
+      streamId = prepared.streamId;
+    }
+    if (!inputPath && streamId) {
+      const entry = onlineSessions.get(streamId)?.entry;
+      if (!entry?.filePath || entry.vid !== String(vid) || entry.seriesId !== String(seriesId)
+        || entry.vidIndex !== Number(vidIndex) || entry.quality !== quality) throw new Error('播放片源已失效，请重试本集');
+      diskInput = entry; entry.disk.readers++; inputPath = entry.filePath;
+    }
+    if (!inputPath) {
+      if (!vid) throw new Error('既没有本地文件，也没有 vid');
+      const cached = playbackEntry(vid, quality);
       if (cached?.filePath) { diskInput = cached; cached.disk.readers++; inputPath = cached.filePath; }
       else if (cached?.buffer) {
         tmpInput = path.join(getCompatDir(), '.tmp_' + randomUUID() + '.mp4');
         await fsp.writeFile(tmpInput, cached.buffer); inputPath = tmpInput;
       } else {
-        // Every provider uses the same HLS/MP4 preparation, including a forced rebuild.
         const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, signal },
-          candidate => prepareDiskEpisode(String(vid), seriesId, quality, candidate, signal, () => {}));
+          candidate => prepareDiskEpisode(String(vid), seriesId, quality, candidate, signal));
         diskInput = prepared; prepared.disk.readers++; inputPath = prepared.filePath;
       }
     }
-
-    const duration = ffprobePath ? await probeDuration(ffprobePath, inputPath, job) : 0;
-    checkCancelled();
-    let encoder = force ? 'libx264' : await pickH264Encoder(ffmpegPath, job);
     checkCancelled();
 
-    const started = Date.now();
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const inputFile = isLinux ? playbackCache.fileIdentity(inputPath) : null;
+    const inputInfo = isLinux && ffprobePath ? await probeVideoInfo(ffprobePath, inputPath, job) : null;
+    checkCancelled();
+    const inputCodec = inputInfo?.codec || payload.codec;
+    if (['h264', 'hevc', 'av1', 'vp9', 'mpeg4'].includes(inputCodec)) codec = inputCodec;
+    if (isLinux) {
+      if (!inputInfo || ![inputInfo.w, inputInfo.h, inputInfo.duration].every(n => Number.isFinite(n) && n > 0)) throw new Error('片源缺少有效的视频轨');
+      if (!meetsDownloadQuality({ width: inputInfo.w, height: inputInfo.h }, quality)) throw new Error('片源未达到所选清晰度，未自动降级');
+      if (inputFile !== playbackCache.fileIdentity(inputPath)) throw new Error('片源已变化，请重试本集');
+      identity = JSON.stringify([String(vid || ''), quality, inputFile, diskInput?.mediaSource || null]);
+      if (canReuseH264(payload) && isDirectH264(inputInfo)) {
+        log('original');
+        const url = payload.streamId ? STREAM_SCHEME + '://play/' + streamId : localPlayUrl(inputPath);
+        return { success: true, url, original: true, codec, width: inputInfo.w, height: inputInfo.h };
+      }
+      const hit = await cachedOutput();
+      if (hit) return hit;
+    }
+    if (!ffmpegPath) throw new Error('未找到 ffmpeg，无法转码');
+
+    const duration = inputInfo?.duration ?? (ffprobePath ? await probeDuration(ffprobePath, inputPath, job) : 0);
+    checkCancelled();
+    const device = isLinux && !force && ['hevc', 'h264'].includes(codec) && ['yuv420p', 'yuv420p10le'].includes(inputInfo?.video?.pix_fmt)
+      ? await pickPlaybackVaapi(ffmpegPath, job) : null;
+    checkCancelled();
+    if (isLinux && !force && !device) log('fallback', ' cause=vaapi-unavailable-or-unsupported');
+    tmpOut = out + '.part';
+    tmpMetadata = out + '.json.part';
+    const candidates = [device && 'h264_vaapi', !force && 'existing', 'libx264'].filter(Boolean);
+    let encoder, verified;
+    for (const candidate of candidates) {
       checkCancelled();
-      // 2) 转码（硬件编码器用各自推荐的参数）
-      const encArgs = encoder === 'libx264'
+      encoder = candidate === 'existing' ? await pickH264Encoder(ffmpegPath, job) : candidate;
+      checkCancelled();
+      const vaapi = encoder === 'h264_vaapi';
+      const encArgs = vaapi
+        ? ['-vf', 'scale_vaapi=format=nv12', '-c:v', encoder, '-rc_mode', 'CQP', '-qp', '23']
+        : encoder === 'libx264'
         ? ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-profile:v', 'high']
         : encoder === 'h264_videotoolbox'
-        ? ['-c:v', 'h264_videotoolbox', '-b:v', '6M', '-pix_fmt', 'yuv420p']
+        ? ['-c:v', 'h264_videotoolbox', '-b:v', '6M']
         : encoder === 'h264_nvenc'
         ? ['-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', '-b:v', '0']
         : encoder === 'h264_qsv'
@@ -2786,91 +2874,84 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
         : encoder === 'h264_amf'
         ? ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '19', '-qp_p', '19']
         : ['-c:v', encoder, '-cq', '23'];
-
-      tmpOut = out + '.part';
-      try { fs.existsSync(tmpOut) && fs.unlinkSync(tmpOut); } catch (_) {}
-
-      const { spawn } = require('child_process');
       const args = [
-        '-y', '-hide_banner', '-i', inputPath,
-        ...encArgs,
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k',
-        '-movflags', '+faststart',
-        '-progress', 'pipe:1', '-nostats',
-        '-f', 'mp4', tmpOut,
+        '-y', '-hide_banner', '-nostdin',
+        ...(vaapi ? ['-vaapi_device', device, '-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi'] : []),
+        '-i', inputPath, '-map', '0:v:0', '-map', '0:a:0?', ...encArgs,
+        ...(vaapi ? [] : ['-pix_fmt', 'yuv420p']),
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
+        '-progress', 'pipe:1', '-nostats', '-f', 'mp4', tmpOut,
       ];
-
-      console.log(`[Compat] 转码 第${vidIndex}集  编码器=${encoder}  时长=${duration.toFixed(0)}s`);
-      let stderrTail = '';
-      const code = await new Promise((resolve) => {
+      const { spawn } = require('child_process');
+      const encodeStarted = Date.now();
+      const code = await new Promise(resolve => {
         const child = spawn(ffmpegPath, args, { windowsHide: true });
-        let killTimer;
-        const abort = () => {
-          try { child.kill('SIGTERM'); } catch (_) {}
-          killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 2000);
-          killTimer.unref?.();
-        };
-        signal.addEventListener('abort', abort, { once: true });
-        if (signal.aborted) abort();
-        let buf = '';
-        child.stdout.on('data', (d) => {
-          buf += d.toString();
-          const lines = buf.split('\n');
-          buf = lines.pop() || '';
+        job.child = child;
+        let buffer = '';
+        child.stdout.on('data', data => {
+          buffer += data.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
           for (const line of lines) {
-            const m = line.match(/^out_time_us=(\d+)/);
-            if (m && duration > 0) {
-              const sec = parseInt(m[1], 10) / 1e6;
-              const pct = Math.max(0, Math.min(99, Math.floor((sec / duration) * 100)));
-              reportProgress({ seriesId: String(seriesId), vidIndex: Number(vidIndex), percent: pct });
+            const match = line.match(/^out_time_us=(\d+)/);
+            if (match && duration > 0) {
+              const percent = Math.max(0, Math.min(99, Math.floor((Number(match[1]) / 1e6 / duration) * 100)));
+              reportProgress({ seriesId: String(seriesId), vidIndex: Number(vidIndex), percent });
             }
           }
         });
-        child.stderr.on('data', (d) => { stderrTail = (stderrTail + d.toString()).slice(-1500); });
-        child.on('error', (e) => { stderrTail += ' | spawn: ' + e.message; resolve(-1); });
-        child.on('close', (c) => {
-          signal.removeEventListener('abort', abort);
-          clearTimeout(killTimer);
-          resolve(c);
+        // Native diagnostics can contain input paths or provider details.
+        child.stderr.on('data', () => {});
+        child.once('error', () => {}); // close still fires after a spawn error
+        child.once('close', code => {
+          if (job.child === child) delete job.child;
+          resolve(code);
         });
       });
       checkCancelled();
-
-      if (code !== 0 || !fs.existsSync(tmpOut)) {
-        try { fs.existsSync(tmpOut) && fs.unlinkSync(tmpOut); } catch (_) {}
-        const tail = stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
-        console.warn('[Compat] 转码失败 code=', code, tail);
-        if (encoder !== 'libx264') {
-          encoder = 'libx264';
-          continue;
-        }
-        return { success: false, error: `软件转码失败（ffmpeg 退出码 ${code}）${tail ? '：' + tail : ''}` };
+      let failure = 'encode-failed';
+      if (code === 0 && fs.existsSync(tmpOut)) {
+        failure = 'output-invalid';
+        try {
+          const info = await probeVideoInfo(ffprobePath, tmpOut, job);
+          checkCancelled();
+          if (info?.codec === 'h264' && [info.w, info.h, info.duration].every(n => Number.isFinite(n) && n > 0)
+            && meetsDownloadQuality({ width: info.w, height: info.h }, quality)
+            && (!inputInfo || (inputInfo.w === info.w && inputInfo.h === info.h && (!inputInfo.audio || info.audioStream?.codec_name === 'aac')))) {
+            verified = { codec: info.codec, width: info.w, height: info.h, actualQuality: Math.min(info.w, info.h) + 'p' };
+          }
+        } catch (_) { checkCancelled(); }
       }
-      break;
+      const timing = ' encoder=' + encoder + ' encodeMs=' + (Date.now() - encodeStarted);
+      if (verified) {
+        log('encoded', timing);
+        break;
+      }
+      log('fallback', timing + ' cause=' + failure);
+      if (encoder === 'libx264') throw new Error(Number.isInteger(code) && code !== 0
+        ? `软件转码失败（FFmpeg 退出码 ${code}）` : '软件转码输出校验失败');
+      await fsp.rm(tmpOut, { force: true });
     }
-
-    const verified = await probePlaybackFile(tmpOut, quality, job);
     checkCancelled();
-    if (verified.codec !== 'h264') throw new Error('转码输出不是有效的 H.264 视频');
-    if (playbackWindow && !withinPlaybackWindow({ vid: String(payload.vid || ''), seriesId: String(seriesId), quality })) throw new Error('该集已离开自动缓存范围');
+    if (isLinux && inputFile !== playbackCache.fileIdentity(inputPath)) throw new Error('片源已变化，请重试本集');
+    if (playbackWindow && !withinPlaybackWindow({ vid: String(vid || ''), seriesId: String(seriesId), quality })) return compatCancelled();
+    const { size, mtimeMs } = fs.statSync(tmpOut);
+    fs.writeFileSync(tmpMetadata, JSON.stringify({ version: 2, identity, size, mtime: mtimeMs, encoder, vid: String(vid || ''),
+      seriesId: String(seriesId), vidIndex: Number(vidIndex), quality }), { mode: 0o600 });
     fs.renameSync(tmpOut, out);
-    const size = fs.statSync(out).size;
-    fs.writeFileSync(out + '.json', JSON.stringify({ version: 1, identity, size, vid: String(payload.vid || ''), seriesId: String(seriesId), vidIndex: Number(vidIndex), quality }), { mode: 0o600 });
+    fs.renameSync(tmpMetadata, out + '.json');
     trimCompatCache();
-    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-    console.log(`[Compat] 完成 ${(size / 1048576).toFixed(1)}MB  用时 ${elapsed}s`);
-
+    const elapsed = Number(((Date.now() - started) / 1000).toFixed(1));
     reportProgress({ seriesId: String(seriesId), vidIndex: Number(vidIndex), percent: 100, done: true });
-    return { success: true, url: localPlayUrl(out), size, elapsed: Number(elapsed), encoder, ...verified };
+    return { success: true, url: localPlayUrl(out), size, elapsed, encoder, ...verified };
   } catch (error) {
-    if (signal.aborted) return compatCancelled();
-    console.error('[Compat] 转码失败:', error.message);
-    return { success: false, error: error.message };
+    log(signal.aborted ? 'cancelled' : 'failed');
+    return signal.aborted ? compatCancelled() : { success: false, error: error.message };
   } finally {
     signal.removeEventListener('abort', abortPreparation);
+    if (ownedRequestId) releaseOnlineRequest({ requestId: ownedRequestId });
     if (diskInput) { diskInput.disk.readers--; disposeOnlineDisk(diskInput); }
-    for (const temporary of [tmpInput, tmpOut]) {
+    for (const temporary of [tmpInput, tmpOut, tmpMetadata]) {
       if (temporary) { try { await fsp.unlink(temporary); } catch (_) {} }
     }
   }

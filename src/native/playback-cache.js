@@ -5,6 +5,10 @@ const { createHash } = require('node:crypto');
 const RADIUS = 5;
 const MAX_EPISODE_BYTES = 1024 * 1024 * 1024;
 const cacheKey = (vid, quality = 'auto') => 'disk:' + quality + ':' + String(vid);
+function fileIdentity(file) {
+  const stat = fs.statSync(file);
+  return JSON.stringify([path.resolve(file), stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]);
+}
 function windowEntries({ seriesId, vidIndex, episodes, quality = 'auto' } = {}) {
   if (!seriesId || !Number.isInteger(vidIndex) || vidIndex < 1 || !Array.isArray(episodes)) throw new Error('缓存窗口无效');
   if (!['auto', '1080p', '720p'].includes(quality)) throw new Error('播放清晰度无效');
@@ -15,7 +19,7 @@ function windowEntries({ seriesId, vidIndex, episodes, quality = 'auto' } = {}) 
 }
 function manifest(entry) {
   return { version: 1, vid: entry.vid, seriesId: entry.seriesId, vidIndex: entry.vidIndex, quality: entry.quality,
-    source: entry.source, mediaSource: entry.mediaSource, codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, size: entry.size, fileMtime: entry.fileMtime, lastUsed: entry.lastUsed };
+    source: entry.source, mediaSource: entry.mediaSource, manualInput: entry.manualInput, codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality, size: entry.size, fileMtime: entry.fileMtime, lastUsed: entry.lastUsed };
 }
 function save(entry) {
   fs.writeFileSync(path.join(entry.disk.directory, 'metadata.json'), JSON.stringify(manifest(entry)), { mode: 0o600 });
@@ -46,4 +50,4 @@ function temporaryPrefix(root, key) {
   fs.mkdirSync(root, { recursive: true });
   return path.join(root, 'episode-' + createHash('sha256').update(key).digest('hex').slice(0, 12) + '-');
 }
-module.exports = { RADIUS, MAX_EPISODE_BYTES, cacheKey, windowEntries, save, restore, temporaryPrefix };
+module.exports = { RADIUS, MAX_EPISODE_BYTES, cacheKey, fileIdentity, windowEntries, save, restore, temporaryPrefix };
