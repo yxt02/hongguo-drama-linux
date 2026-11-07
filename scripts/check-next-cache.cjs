@@ -10,13 +10,13 @@ const deferred = () => { let resolve; const promise = new Promise(r => resolve =
   assert.equal(ui.button('看完自动删'), undefined);
   assert.equal(ui.button('兼容模式'), undefined);
   const prefetched = ui.prepares.filter(p => p.prefetch);
-  assert.equal(prefetched.length, 10);
-  assert.deepEqual(prefetched.map(p => p.vidIndex), [11, 12, 13, 14, 15, 9, 8, 7, 6, 5]);
+  assert.equal(prefetched.length, 2);
+  assert.deepEqual(prefetched.map(p => p.vidIndex), [11, 12]);
   assert.ok(ui.prepares.every(p => p.disk && p.quality === 'auto'));
   assert.ok(ui.windows.every(w => w.episodes.length <= 11));
   assert.ok(prefetched.every(p => ui.releases.some(r => r.requestId === p.requestId)), 'finished prefetch must release its session');
   ui.find(n => n.type === 'video').props.onTimeUpdate({ currentTarget: ui.media }); await ui.flush();
-  assert.equal(ui.prepares.filter(p => p.prefetch).length, 10, 'time events must not duplicate downloads');
+  assert.equal(ui.prepares.filter(p => p.prefetch).length, 2, 'time events must not duplicate downloads');
   ui.episode(16); await ui.flush(); ui.metadata(); await ui.flush(); await ui.flush();
   assert.deepEqual(ui.windows.at(-1).episodes.map(e => e.vidIndex), [11,12,13,14,15,16,17,18,19,20]);
   ui.unmount();
@@ -29,13 +29,26 @@ const deferred = () => { let resolve; const promise = new Promise(r => resolve =
     return gate.promise.finally(() => active--);
   } });
   await bounded.flush(); bounded.metadata(); await bounded.flush();
-  assert.equal(gates.size, 2); assert.equal(peak, 2);
+  assert.equal(gates.size, 1); assert.equal(peak, 1);
   bounded.episode(1); await bounded.flush(); bounded.metadata(); await bounded.flush();
-  assert.ok(bounded.releases.filter(r => gates.has(r.requestId)).length >= 2, 'jump must cancel out-of-window requests');
+  assert.ok(bounded.releases.filter(r => gates.has(r.requestId)).length >= 1, 'jump must cancel out-of-window requests');
   for (const gate of gates.values()) gate.resolve({ success: false });
-  await bounded.flush(); assert.equal(peak, 2, 'jump must not exceed two background workers');
+  await bounded.flush(); assert.equal(peak, 1, 'jump must not start another background worker before the old one settles');
   bounded.unmount(); for (const gate of gates.values()) gate.resolve({ success: false }); await bounded.flush();
   console.log('PASS bounded background concurrency and cancellation across distant episode jumps');
+
+  const transfer = deferred();
+  const promoted = mount({ episodeCount: 3, props: target(1), prepare: p => p.vidIndex === 2 && p.prefetch
+    ? transfer.promise : { success: true, url: 'hongguo-stream://foreground' } });
+  await promoted.flush(); promoted.metadata(); await promoted.flush();
+  const next = promoted.prepares.find(p => p.prefetch);
+  promoted.episode(2); await promoted.flush();
+  assert.equal(promoted.prepares.filter(p => p.vidIndex === 2).length, 1);
+  assert.ok(!promoted.releases.some(r => r.requestId === next.requestId));
+  transfer.resolve({ success: true, url: 'hongguo-stream://promoted', streamId: 'promoted' });
+  await promoted.flush();
+  assert.equal(promoted.find(n => n.type === 'video').props.src, 'hongguo-stream://promoted');
+  promoted.unmount();
 
   const locked = mount({ episodeCount: 8, props: target(1), lockedIndexes: [2, 3] });
   await locked.flush(); locked.metadata(); await locked.flush();

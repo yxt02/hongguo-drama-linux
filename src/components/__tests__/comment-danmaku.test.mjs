@@ -2,6 +2,36 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as model from '../danmakuModel.mjs';
 import { DEFAULT_DANMAKU_SETTINGS, normalizeDanmakuSettings, advanceDanmaku } from '../danmakuModel.mjs';
+import { advanceTimedDanmaku, appendOfficialPage, createOfficialFeed, resolveDanmakuStatus } from '../danmakuOfficial.mjs';
+
+test('timeline emits on the video clock after seeks and does not recycle earlier comments', () => {
+  const feed = createOfficialFeed('series', 'episode');
+  const options = { width: 500, height: 360, settings: DEFAULT_DANMAKU_SETTINGS, reducedMotion: false };
+  const list = [{ time: 1, text: '第一条' }, { time: 20, text: '第二条' }];
+  const state = feed.animation;
+  advanceTimedDanmaku(state, list, 0.5, 0, options);
+  assert.equal(state.items.length, 0);
+  advanceTimedDanmaku(state, list, 1, 0.5, options);
+  assert.equal(state.items[0]?.text, '第一条');
+  state.items = []; state.lastTime = undefined;
+  advanceTimedDanmaku(state, list, 19.8, 0, options);
+  assert.equal(state.items.length, 0);
+  advanceTimedDanmaku(state, list, 20, 0.2, options);
+  assert.equal(state.items[0]?.text, '第二条');
+});
+
+test('a partial timeline keeps its items and reports the failure separately', () => {
+  const feed = createOfficialFeed('series', 'episode');
+  const page = { series_id: 'series', episode_id: 'episode', success: false, partial: true,
+    items: [{ time: 3, text: '保留这条' }], error: '后续弹幕加载中断' };
+  appendOfficialPage(feed, page);
+  appendOfficialPage(feed, page);
+  assert.equal(feed.danmaku.length, 1);
+  assert.throws(() => appendOfficialPage(feed, { ...page, episode_id: 'wrong' }));
+  const status = { source: 'official', supported: true, enabled: true, active: true, visible: true, loaded: true };
+  assert.equal(resolveDanmakuStatus({ ...status, error: feed.error, count: 1 }), page.error);
+  assert.equal(resolveDanmakuStatus({ ...status, count: 0 }), '本集暂无弹幕');
+});
 
 test('settings reject malformed storage and clamp supported numeric values', () => {
   assert.deepEqual(normalizeDanmakuSettings(null), DEFAULT_DANMAKU_SETTINGS);

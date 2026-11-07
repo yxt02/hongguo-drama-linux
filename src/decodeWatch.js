@@ -197,8 +197,39 @@ export function createDecodeGuard({ blackProbeEnabled = true } = {}) {
   };
 }
 
-// Device-local series policy. Explicit choices and successful decode repairs persist;
-// network failures and ordinary dark scenes must never learn a preference.
+// On Linux only an advancing playback clock with no new picture can trigger
+// a repair. Presented/decoded frames are evidence even when their pixels are black.
+export function createFrameDecodeGuard() {
+  let previous = null;
+  let stalled = 0;
+  const reset = () => { previous = null; stalled = 0; };
+  return {
+    reset,
+    push(sample) {
+      if (sample.inactive || !Number.isFinite(sample.currentTime)) {
+        reset();
+        return 'watch';
+      }
+      const last = previous;
+      previous = sample;
+      const advance = last ? sample.currentTime - last.currentTime : 0;
+      if (advance <= 0 || advance > 2 * Math.max(1, sample.playbackRate || 1)) {
+        stalled = 0;
+        return 'watch';
+      }
+      const progressed = sample.presented > last.presented || sample.decoded > last.decoded;
+      if (progressed) {
+        stalled = 0;
+        return 'healthy';
+      }
+      const noFrames = !sample.videoWidth || (Number.isFinite(sample.decoded) && sample.decoded === last.decoded);
+      stalled = noFrames ? stalled + 1 : 0;
+      return stalled >= BLACK_SAMPLES_TO_FAIL ? 'fail-no-picture' : 'watch';
+    },
+  };
+}
+
+// Keep device-local series choices and records created by older versions.
 export const SERIES_COMPAT_KEY = 'hongguo:series-compat:v1';
 function readCompatSeries(storage) {
   try {

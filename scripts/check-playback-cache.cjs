@@ -97,6 +97,24 @@ if (require.main === module) (async () => {
     assert.equal(repaired.success, true); assert.equal(repaired.cached, false); assert.equal(restarted.metrics.transfers, 1);
     await release(restarted, repaired); restarted.context.clearOnlineCache();
   });
+  await check('an insufficient local original does not repeatedly invalidate the selected online quality', async () => {
+    const h = load(), manual = path.join(h.root, 'manual.mp4');
+    const low = Buffer.alloc(4096, 1); low[1] = 7;
+    fs.writeFileSync(manual, low);
+    h.context.testManual = { savePath: manual, status: 'completed', hongguoInfo: { vid: 'v10', series_id: 'S' } };
+    h.run('downloadTasks = [testManual]');
+    window(h, 10, '1080p');
+    const first = await prepare(h, 10, '1080p'); await release(h, first);
+    const second = await prepare(h, 10, '1080p'); await release(h, second);
+    assert.equal(second.cached, true);
+    assert.equal(h.metrics.transfers, 1);
+    fs.writeFileSync(manual, Buffer.alloc(4096, 1));
+    const replaced = await prepare(h, 10, '1080p');
+    assert.equal(replaced.cached, false);
+    assert.equal(h.run("onlineCache.get('disk:1080p:v10').mediaSource"), 'manual');
+    assert.equal(h.metrics.transfers, 1);
+    await release(h, replaced); h.context.clearOnlineCache();
+  });
   await check('distant jump cancels pending work and leaves no partial disk file', async () => {
     const h = load(), gate = defer(); window(h, 10);
     h.context.requestMedia = async info => { await gate.promise; return h.response(info); };

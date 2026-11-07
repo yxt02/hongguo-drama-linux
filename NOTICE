@@ -45,6 +45,10 @@ GPLv3 第 6 条要求分发二进制时提供对应的完整源码。
 本软件为开源项目，完整源码见本仓库；如你是从别处获得本软件的二进制版本，
 可向分发者索取源码，或从本仓库获取。
 
+时间轴弹幕的分时请求、签名与显示逻辑移植自 jackotom/hongguo-drama v6.2，
+其实现参考 dawei233/hongguo-drama 提交 c884fab6c6e36ad38173e251738b9b35f958383f。
+原作者说明保留在相关源码中，沿用 GPL-3.0 许可。
+
 五、第三方组件
 --------------
 本软件包含以下第三方组件，其版权归各自作者所有：
@@ -102,3 +106,8 @@ code was copied. Content rights remain with their respective owners.
 Mac arm64、Mac x64、Windows x64 共用版本号；平台验证与签名状态分别记录。
 
 1.2 changes: per-series fit-window / keep-width picture modes; optional GitHub release notices without forced download or installation.
+
+十、Linux 播放优化与 App 取源恢复（2026-11-07）
+-----------------------------------------------
+本次修改优化 Linux 播放解码、VAAPI 兼容转码和下一集预取，并改进 App 取源失败后的
+会话恢复和并发处理。本修改版本整体继续采用 GNU General Public License v3.0。

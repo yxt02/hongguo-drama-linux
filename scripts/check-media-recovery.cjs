@@ -79,6 +79,99 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     const p=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1'});
     assert.equal(p.success,true,p.error); assert.equal(lookups,2);
   });
+  await check('both-empty exhaustion ends the round instead of rewalking the model requests',async()=>{
+    let lookups=0; const h=harness(async()=>{ lookups++;
+      return {url:null,code:'SOURCE_UNAVAILABLE',error:'播放接口返回空响应（已尝试备用入口），请稍后重试',
+        sources:[{source:'app',code:'EMPTY_RESPONSE',message:'播放接口返回空响应（已尝试备用入口），请稍后重试',exhausted:true}]}; });
+    const p=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1'});
+    assert.equal(p.success,false);
+    assert.equal(p.exhausted,true,'renderer learns the terminal state to stop advancing prefetch');
+    assert.match(p.error,/空响应/);
+    assert.equal(lookups,1,'外围重试收到主备均空后立即结束这一轮');
+  });
+  await check('source roles follow the playback window',async()=>{
+    const roles=[]; const h=harness(async(_v,_s,o)=>{ roles.push(o.role); return info('/ok'); });
+    const w=await h.handlers['set-playback-window']({}, {seriesId:'1',vidIndex:1,quality:'auto',
+      episodes:[{vid:'11',vidIndex:1},{vid:'22',vidIndex:2},{vid:'33',vidIndex:3}]});
+    assert.equal(w.success,true,w.error);
+    const next=await h.handlers['prepare-online-play']({}, {vid:'22',seriesId:'1',vidIndex:2,prefetch:true});
+    assert.equal(next.success,true,next.error);
+    assert.equal(roles[0],'next','紧邻的下一可播集预取可申请快速更新');
+    const distant=await h.handlers['prepare-online-play']({}, {vid:'33',seriesId:'1',vidIndex:3,prefetch:true});
+    assert.equal(distant.success,true,distant.error);
+    assert.equal(roles[1],'distant','更远的预取不申请快速更新');
+    const foreground=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1',vidIndex:1});
+    assert.equal(foreground.success,true,foreground.error);
+    assert.equal(roles[2],'foreground','当前集优先取源');
+  });
+  await check('a promoted prefetch reuses its in-flight job and gains foreground stage reporting',async()=>{
+    const events=[]; let calls=0, release;
+    const h=harness(async(_v,_s,o)=>{ calls++;
+      return new Promise(resolve=>{ release=()=>{ o.onStage?.('reconnecting'); resolve(info('/ok')); }; });
+    });
+    h.context.sendToRenderer=(channel,payload)=>{ if(channel==='online-play-progress') events.push(payload); };
+    const w=await h.handlers['set-playback-window']({}, {seriesId:'1',vidIndex:1,quality:'auto',
+      episodes:[{vid:'11',vidIndex:1},{vid:'22',vidIndex:2}]});
+    assert.equal(w.success,true,w.error);
+    const prefetch=h.handlers['prepare-online-play']({}, {vid:'22',seriesId:'1',vidIndex:2,prefetch:true,requestId:'pf'});
+    for (let i=0;i<30 && calls<1;i++) await new Promise(r=>setImmediate(r));
+    assert.equal(calls,1);
+    assert.equal(events.length,0,'预取阶段不上报前台等待状态');
+    const promoted=h.handlers['prepare-online-play']({}, {vid:'22',seriesId:'1',vidIndex:2,requestId:'fg'});
+    await new Promise(r=>setImmediate(r));
+    release();
+    const pp=await prefetch, mp=await promoted;
+    assert.equal(pp.success,true,pp.error); assert.equal(mp.success,true,mp.error);
+    assert.equal(calls,1,'切集提升复用同一在途任务，不重新取源');
+    assert.ok(events.some(e=>e.phase==='reconnecting'),'提升后的恢复阶段回报给前台');
+  });
+  await check('managed prefetch reports reconnecting and readiness belongs to the validated file', async () => {
+    const events = [];
+    let finish;
+    const h = harness(async (_vid, _series, options) => {
+      options.onStage('reconnecting');
+      return new Promise(resolve => { finish = () => resolve(info('/ok')); });
+    });
+    h.context.sendToRenderer = (channel, payload) => { if (channel === 'online-play-progress') events.push(payload); };
+    const contents = h.run('mainWindow = {webContents: {mainFrame: {}}}; mainWindow.webContents');
+    const event = { sender: contents, senderFrame: contents.mainFrame };
+    const descriptor = { vid: '2202', vidIndex: 2 };
+    const window = await h.handlers['set-playback-window']({}, { seriesId: '1', vidIndex: 1, episodes: [descriptor] });
+    assert.equal(window.success, true, window.error);
+    const request = h.handlers['prepare-online-play']({}, { ...descriptor, seriesId: '1', disk: true, prefetch: true, requestId: 'managed-pf' });
+    for (let i = 0; i < 30 && !finish; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(finish);
+    assert.ok(events.some(e => e.requestId === 'managed-pf' && e.phase === 'reconnecting'));
+    finish();
+    const prepared = await request;
+    assert.equal(prepared.success, true, prepared.error);
+    const inspect = (seriesId, vidIndex = 2) => h.handlers['episode-cache-status'](event, { seriesId, episodes: [{ ...descriptor, vidIndex }] });
+    assert.equal(inspect('1').items[2].cached, true);
+    assert.equal(inspect('1', 3).items[3], undefined);
+    assert.equal(inspect('2').items[2], undefined);
+    const file = h.run("playbackEntry('2202').filePath");
+    fs.utimesSync(file, new Date(0), new Date(0));
+    assert.equal(inspect('1').items[2], undefined, 'same-size modified files are not ready');
+    await h.handlers['release-online-play'](event, { streamId: prepared.streamId });
+  });
+  await check('switching away aborts the old episode fetch signal before session updates',async()=>{
+    let calls=0; const signals=[];
+    const h=harness(async(_v,_s,o)=>{ calls++;
+      signals.push(o.signal);
+      return new Promise(()=>{}); // 旧任务挂起，模拟冷却等待中的取源
+    });
+    const window=episodes=>h.handlers['set-playback-window']({}, {seriesId:'1',vidIndex:1,quality:'auto',episodes});
+    assert.equal((await window([{vid:'11',vidIndex:1},{vid:'22',vidIndex:2}])).success,true);
+    const stale=h.handlers['prepare-online-play']({}, {vid:'22',seriesId:'1',vidIndex:2,disk:true,prefetch:true});
+    for (let i=0;i<60 && calls<1;i++) await new Promise(r=>setImmediate(r));
+    assert.equal(calls,1);
+    // 窗口切走后旧任务被取消；取消信号必须传入取源轮次，冷却结束后不得再注册。
+    assert.equal((await window([{vid:'11',vidIndex:1}])).success,true);
+    const result=await stale;
+    assert.equal(result.success,false);
+    assert.ok(signals[0],'取源轮次收到任务的取消信号');
+    assert.equal(signals[0].aborted,true,'切走后旧任务的取源信号随任务中止');
+  });
   await check('stream recovers before headers and preserves requested Range',async()=>{
     let lookups=0; const h=harness(async()=>++lookups===1?info('/missing','web'):info('/ok'));
     const p=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1'});

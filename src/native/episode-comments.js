@@ -11,6 +11,10 @@ async function fetchEpisodeComments(options) {
       !Number.isInteger(limit) || limit < 1 || limit > 30) return { success: false, error: '评论请求编号或条数无效' };
   if (cursor !== null) return { success: false, source_limited: true, error: NOTICE };
   const details = await fetchPublicDetails(seriesId, episodeId);
+  if (details.code === 'EPISODE_COMMENTS_UNAVAILABLE') {
+    return { success: true, series_id: seriesId, episode_id: episodeId, items: [], next_cursor: null,
+      has_more: false, total: null, source_limited: true, notice: '官网未公开本集评论，可切换到时间轴弹幕' };
+  }
   if (!details.success) return details;
   const seen = new Set();
   const items = [];

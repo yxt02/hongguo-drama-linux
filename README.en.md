@@ -52,7 +52,7 @@ In-app updates support writable Linux x64 directory installations. Other package
 |---|---|
 | Discovery | Browse categories, search titles, or paste a share link / series ID |
 | Quality | Prefer the highest available App-source resolution, with explicit 1080p / 720p options |
-| Compatibility | Prepare H.264 before first playback by default |
+| Compatibility | Try the original first and convert to H.264 if decoding fails |
 | Resume | Keep separate episode and time positions for each drama and season |
 | Automatic cache | Retain the current episode and up to five episodes on each side |
 | Downloads | Download unfinished episodes after the current one; skip completed, queued and locked episodes |
@@ -79,7 +79,7 @@ Matching is based on titles, not an official season relationship. Use **修正�
 
 ## H.264 and disk use
 
-H.264 compatibility is the default for online and local playback. Conversion preserves source dimensions, reuses valid compatibility caches, and prepares nearby episodes serially. Initial preparation time depends on the source and computer.
+Linux tries the original media by default. When conversion is needed, the player prefers Intel VAAPI where available, preserves source dimensions, and reuses conversions that match the original. Background preparation prioritizes the next playable episode, and playback can take over a job already in progress.
 
 Use **本剧：兼容解码 → 恢复自动** to switch one drama to automatic decoding. The choice persists, and you can switch back to H.264. Decode failure detection remains available in automatic mode.
 

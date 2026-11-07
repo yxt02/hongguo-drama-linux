@@ -1,6 +1,5 @@
 // Player integration tests for automatic decode-failure repair (no real media).
-// Reproduces the "black screen with sound until manually switching to H.264"
-// report: the player must now detect it and transcode without manual action.
+// Linux distinguishes stalled decoding from a dark scene or an interrupted clock.
 const assert = require('node:assert/strict');
 const { mount } = require('./check-player-resume.cjs');
 
@@ -13,32 +12,33 @@ const source = ui => ui.find(n => n.type === 'video').props.src;
     try { await fn(); console.log(`PASS ${name}`); } catch (e) { failures++; console.error(`FAIL ${name}: ${e.stack}`); }
   };
 
-  await test('black screen with sound auto-switches to H.264 without manual action', async () => {
+  await test('a stalled decoder with an advancing clock falls back once', async () => {
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
       prepare: async () => ({ success: true, url: 'hongguo-stream://black' }) });
     await ui.flush();
     ui.metadata();            // 播放起来后守卫开始采样
-    ui.setFrameLuma(0);       // 纯黑画面
+    ui.media.webkitDecodedFrameCount = 0;
     assert.equal(ui.transcodes.length, 0);
     for (let i = 0; i < 8; i++) {
       ui.media.currentTime = 1 + i * 0.9;
       if (!ui.decodeTick()) break; // 守卫命中后自行解除
       await ui.flush();
     }
-    assert.equal(ui.transcodes.length, 1, 'black screen with sound must trigger one auto transcode');
+    assert.equal(ui.transcodes.length, 1, 'decoder stall must trigger one auto transcode');
     assert.equal(ui.transcodes[0].vidIndex, 1);
     await ui.flush();
     assert.equal(source(ui), 'file:///mock-compat.mp4', 'playback must switch to the H.264 compat media');
     ui.unmount();
   });
 
-  await test('visible picture never triggers automatic transcode', async () => {
+  await test('dark scenes with advancing frames keep playing', async () => {
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } } });
     await ui.flush();
     ui.metadata();
-    ui.setFrameLuma(128);
+    ui.setFrameLuma(0);
     for (let i = 0; i < 8; i++) {
       ui.media.currentTime = 1 + i * 0.9;
+      ui.media.webkitDecodedFrameCount = i * 20;
       ui.decodeTick();
       await ui.flush();
     }
@@ -79,28 +79,21 @@ const source = ui => ui.find(n => n.type === 'video').props.src;
     ui.unmount();
   });
 
-  await test('compat output is not re-transcoded when its content is dark', async () => {
-    const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
-      prepare: async () => ({ success: true, url: 'hongguo-stream://dark', codec: 'hevc' }) });
-    await ui.flush();
-    ui.metadata();
-    ui.setFrameLuma(0);
-    for (let i = 0; i < 8; i++) {
-      ui.media.currentTime = 1 + i * 0.9;
-      if (!ui.decodeTick()) break;
+  await test('buffering, seeks and pause clear accumulated decoder-stall evidence', async () => {
+    const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1 } } });
+    await ui.flush(); ui.metadata();
+    ui.media.webkitDecodedFrameCount = 4;
+    for (const transition of ['waiting', 'seeking', 'paused']) {
+      for (let i = 0; i < 5; i++) { ui.media.currentTime += 0.9; ui.decodeTick(); }
+      const props = ui.find(n => n.type === 'video').props;
+      if (transition === 'waiting') { ui.media.readyState = 2; props.onWaiting(); }
+      if (transition === 'seeking') { ui.media.seeking = true; props.onSeeking(); }
+      if (transition === 'paused') { ui.media.paused = true; props.onPause(); }
+      for (let i = 0; i < 8; i++) { ui.media.currentTime += 0.9; ui.decodeTick(); }
+      ui.media.readyState = 4; ui.media.seeking = false; ui.media.paused = false;
       await ui.flush();
+      assert.equal(ui.transcodes.length, 0);
     }
-    assert.equal(ui.transcodes.length, 1);
-    await ui.flush();
-    assert.equal(source(ui), 'file:///mock-compat.mp4');
-    // 兼容片源本身是 H.264；即便内容偏暗，守卫也不应再次转码。
-    ui.metadata();
-    for (let i = 0; i < 8; i++) {
-      ui.media.currentTime = 1 + i * 0.9;
-      ui.decodeTick();
-      await ui.flush();
-    }
-    assert.equal(ui.transcodes.length, 1, 'dark content on the compat media must not loop transcodes');
     ui.unmount();
   });
 

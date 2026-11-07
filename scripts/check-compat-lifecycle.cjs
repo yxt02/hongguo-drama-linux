@@ -11,7 +11,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-compat-lifecycle-'))
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 let failures = 0, serial = 0;
-function load({ permission, manual = false, probe, encoder = 'libx264', exitCodes = [] } = {}) {
+function load({ permission, manual = false, probe, encoder = 'libx264', exitCodes = [], vaapi = null, invalidVaapiOutput = false } = {}) {
   const dir = path.join(root, String(++serial)); fs.mkdirSync(dir);
   const handlers = {}, events = [], children = [], app = new EventEmitter();
   Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
@@ -26,17 +26,25 @@ function load({ permission, manual = false, probe, encoder = 'libx264', exitCode
     children.push(child); if (!manual) setImmediate(() => child.finish(child.killed ? 143 : exitCode)); return child;
   } };
   const native = { fetchPlayUrlSingle: async () => ({ url: 'https://fixture.invalid/video.mp4', codec: 'hevc' }), fetchEpisodeList: async () => { metrics.permissions++; return permission ? permission() : { episodes: [{ vid: 'xifan:v', vid_index: 1, locked: false }] }; } };
-  const context = vm.createContext({ require: name => name === 'electron' ? electron : name === 'child_process' ? childProcess : name === './src/native/hongguo' ? native : name === './src/store' ? {} : req(name), __dirname: path.dirname(source), process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout, console: { log() {}, error() {}, warn() {} } });
+  const context = vm.createContext({ require: name => name === 'electron' ? electron : name === 'child_process' ? childProcess : name === './src/native/playback-vaapi' ? { pickPlaybackVaapi: async () => vaapi } : name === './src/native/hongguo' ? native : name === './src/store' ? {} : req(name), __dirname: path.dirname(source), process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout, console: { log() {}, error() {}, warn() {} } });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
   context.resolveFfmpeg = () => '/fixture/ffmpeg';
-  context.prepareDiskEpisode = async () => {
+  context.prepareDiskEpisode = async (vid, seriesId, quality) => {
     metrics.media++;
     const directory = fs.mkdtempSync(path.join(dir, 'input-'));
     const filePath = path.join(directory, 'video.mp4'); fs.writeFileSync(filePath, Buffer.alloc(120000));
-    return { filePath, disk: { directory, readers: 0, managed: true } };
+    return { vid, seriesId: String(seriesId), quality, filePath, size: 120000, fileMtime: fs.statSync(filePath).mtimeMs,
+      complete: true, validated: true, source: 'xifan', mediaSource: 'app', disk: { directory, readers: 0, managed: true } };
   };
-  context.probeVideoInfo = async () => ({ codec: 'h264', w: 1080, h: 1920, duration: 1 });
-  context.probeDuration = probe || (async () => 1);
+  context.probeVideoInfo = async (_probe, file) => {
+    if (!file.endsWith('.part') && !file.startsWith(context.getCompatDir())) {
+      await probe?.();
+      return { codec: 'hevc', w: 1080, h: 1920, duration: 1, video: { pix_fmt: 'yuv420p10le' } };
+    }
+    const args = children.at(-1)?.args;
+    if (file.endsWith('.part') && invalidVaapiOutput && args?.includes('h264_vaapi')) return null;
+    return { codec: 'h264', w: 1080, h: 1920, duration: 1 };
+  };
   context.pickH264Encoder = async () => { metrics.encoder++; return encoder; };
   context.sendToRenderer = (name, data) => events.push({ name, ...data });
   return { context, handlers, dir, children, metrics, events, run: code => vm.runInContext(code, context) };
@@ -83,7 +91,7 @@ if (require.main === module) (async () => {
     assert.equal(result.success, false, 'cleared pending work later published output'); assert.equal(h.metrics.media, 0);
     assert.deepEqual(fs.readdirSync(h.context.getCompatDir()), []); assert.equal(h.run('compatPreparing.size'), 0);
   });
-  await check('cancel after duration probe never starts encoder discovery', async () => {
+  await check('cancel after input probe never starts encoder discovery', async () => {
     const gate = deferred(), h = load({ probe: () => gate.promise });
     const started = h.handlers['transcode-for-playback']({}, payload('probe')); await tick(); await tick();
     const cancelled = h.handlers['cancel-transcode-for-playback']({}, payload('probe'));
@@ -187,6 +195,31 @@ if (require.main === module) (async () => {
     const h = load(); h.context.probeVideoInfo = async () => null;
     const result = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 1, vid: 'v1', requestId: 'bad-output' });
     assert.equal(result.success, false); assert.deepEqual(fs.readdirSync(h.context.getCompatDir()), []);
+  });
+  await check('invalid VAAPI output falls back to the existing encoder and then software', async () => {
+    const h = load({ vaapi: '/dev/dri/test-render', invalidVaapiOutput: true, encoder: 'h264_nvenc', exitCodes: [0, 1, 0] });
+    const result = await h.handlers['transcode-for-playback']({}, { ...payload('vaapi'), force: false });
+    assert.equal(result.encoder, 'libx264');
+    assert.deepEqual(h.children.map(child => child.args[child.args.indexOf('-c:v') + 1]), ['h264_vaapi', 'h264_nvenc', 'libx264']);
+    assert.ok(h.children[0].args.indexOf('-hwaccel') < h.children[0].args.indexOf('-i'));
+    assert.ok(h.children[0].args.includes('scale_vaapi=format=nv12'));
+    assert.ok(!h.children[1].args.includes('-hwaccel'));
+  });
+  await check('a foreground conversion preempts an unrelated background encoder and waits for its exit', async () => {
+    const h = load({ manual: true }), shared = { seriesId: 'S', quality: 'auto' };
+    const background = h.handlers['transcode-for-playback']({}, { ...shared, vidIndex: 2, vid: 'v2', requestId: 'bg', background: true });
+    await tick(); await tick();
+    assert.equal(h.children.length, 1);
+    const foreground = h.handlers['transcode-for-playback']({}, { ...shared, vidIndex: 1, vid: 'v1', requestId: 'fg' });
+    await tick();
+    assert.equal(h.children.length, 1);
+    assert.ok(h.children[0].killed);
+    h.children[0].finish(143);
+    assert.equal((await background).cancelled, true);
+    await tick(); await tick();
+    assert.equal(h.children.length, 2);
+    h.children[1].finish();
+    assert.equal((await foreground).success, true);
   });
   await check('quality and punctuation-distinct series have separate compatibility cache paths', () => {
     const h = load(); assert.notEqual(h.context.compatPathFor('a:b', 1), h.context.compatPathFor('ab', 1));

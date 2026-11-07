@@ -11,7 +11,7 @@ const formatTime = seconds => {
 };
 const Icon = ({ children }) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
 
-export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill }) {
+export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill, appFill = false, onToggleAppFill, stageDrawer = null, onOpenStageDrawer, drawerButtonsRef }) {
   const [media, setMedia] = useState({ paused: true, ended: false, time: 0, duration: 0, muted: false, volume: 1 });
   const [fullscreen, setFullscreen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -57,7 +57,8 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
     let dragging = false;
     const scheduleHide = () => {
       clearTimeout(timer);
-      if (available && !media.paused && !menuOpen && !danmakuOpen && !dragging) {
+      // 抽屉打开或键盘焦点在控件内时保持可操作。
+      if (available && !media.paused && !menuOpen && !danmakuOpen && !dragging && !stageDrawer) {
         timer = setTimeout(() => {
           if (!controlsRef.current?.querySelector(':focus-visible')) setControlsHidden(true);
         }, 2000);
@@ -122,7 +123,7 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
       window.removeEventListener('pointercancel', stopDrag);
       window.removeEventListener('blur', onBlur);
     };
-  }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, source, stageRef, shortcuts]);
+  }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, stageDrawer, source, stageRef, shortcuts]);
 
   useEffect(() => {
     setMenuOpen(false);
@@ -199,14 +200,27 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
 
   return (
     <div ref={controlsRef} className={`player-controls ${controlsHidden ? 'controls-hidden' : ''}`} role="group" aria-label="视频播放控制">
+      {/* 应用内全屏：右上角提供「选集」和「信息」，控制条隐藏时一并隐藏 */}
+      {appFill && onOpenStageDrawer && (
+        <div className="player-controls-top">
+          <button type="button" ref={drawerButtonsRef?.episodes} aria-label="选集" title="选集"
+            aria-pressed={stageDrawer === 'episodes'} onClick={() => onOpenStageDrawer('episodes')}>
+            <span className="player-controls-top-label" aria-hidden="true">选集</span>
+          </button>
+          <button type="button" ref={drawerButtonsRef?.info} aria-label="播放信息" title="播放信息"
+            aria-pressed={stageDrawer === 'info'} onClick={() => onOpenStageDrawer('info')}>
+            <span className="player-controls-top-label" aria-hidden="true">信息</span>
+          </button>
+        </div>
+      )}
       <input className="player-controls-seek" type="range" aria-label="播放进度" aria-valuetext={`${formatTime(media.time)} / ${formatTime(media.duration)}`} min="0" max={media.duration || 0} step="0.1" value={Math.min(media.time, media.duration)} disabled={!available || !media.duration} onChange={seek} />
       <div className="player-controls-row">
         <button type="button" data-player-control aria-label={media.paused ? '播放' : '暂停'} title={`播放/暂停（${formatShortcut(shortcuts.play)}）`} disabled={!available} onClick={togglePlay}>{media.paused ? <Play size={18} /> : <Pause size={18} />}</button>
         <span className="player-controls-time">{formatTime(media.time)} / {formatTime(media.duration)}</span>
         {danmaku && <div className="player-controls-danmaku">
-          <button type="button" data-player-menu className={`danmaku-icon-button ${danmaku.enabled ? 'danmaku-enabled' : ''}`} aria-label={danmaku.enabled ? '关闭评论弹幕' : '开启评论弹幕'} aria-pressed={danmaku.enabled}
-            title={danmaku.supported ? '将当前集公开评论显示在画面上' : '仅红果来源的当前集支持评论弹幕'} disabled={!danmaku.supported} onClick={danmaku.toggle}><span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-state-mark" /></span></button>
-          <button type="button" data-player-menu className="danmaku-icon-button" ref={danmakuButtonRef} aria-label="弹幕设置" title="评论弹幕设置" aria-haspopup="dialog" aria-expanded={danmakuOpen}
+          <button type="button" data-player-menu className={`danmaku-icon-button ${danmaku.enabled ? 'danmaku-enabled' : ''}`} aria-label={danmaku.enabled ? '关闭弹幕' : '开启弹幕'} aria-pressed={danmaku.enabled}
+            title={danmaku.supported ? `显示本集${danmaku.sourceLabel || '弹幕'}` : '仅红果来源支持弹幕'} disabled={!danmaku.supported} onClick={danmaku.toggle}><span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-state-mark" /></span></button>
+          <button type="button" data-player-menu className="danmaku-icon-button" ref={danmakuButtonRef} aria-label="弹幕设置" title="弹幕设置" aria-haspopup="dialog" aria-expanded={danmakuOpen}
             onClick={() => { setMenuOpen(false); setDanmakuOpen(open => !open); }}>
             <span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-settings-mark"><SettingsIcon size={10} /></span></span>
           </button>
@@ -221,6 +235,12 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
         <button type="button" data-player-control aria-label={expanded ? '退出全屏' : '全屏'} title={`${expanded ? '退出全屏' : portrait ? '填满当前窗口' : '全屏'}（${formatShortcut(shortcuts.fullscreen)}）`} onClick={onToggleFullscreen}>
           <Icon><path d={expanded ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></Icon>
         </button>
+        {onToggleAppFill && (
+          <button type="button" data-player-control aria-label={appFill ? '退出应用内全屏' : '应用内全屏'} aria-pressed={appFill}
+            title={appFill ? '退出应用内全屏' : '应用内全屏：播放器填满应用窗口，收起导航与页面操作栏'} onClick={onToggleAppFill}>
+            <Icon><rect x="3.5" y="4.5" width="17" height="15" rx="2" />{appFill ? <path d="M9 9h6v6H9z" /> : <path d="M7 12h10" />}</Icon>
+          </button>
+        )}
         <button type="button" data-player-control className="player-controls-rate" aria-label="增加播放速度" title={`播放速度 ${rate}×，点击增加 0.25 倍，4 倍后回到 1 倍`} onClick={() => onRateChange(rate >= 4 ? 1 : Math.min(4, rate + 0.25))}>{rate}×</button>
         <div className="player-controls-options" data-player-menu ref={menuRef}>
           <button type="button" ref={menuButtonRef} aria-label="更多播放选项" title="更多播放选项" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={() => { setDanmakuOpen(false); setMenuOpen(open => !open); }}>

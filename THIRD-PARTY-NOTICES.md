@@ -21,6 +21,10 @@ Electron 打包产物中已包含 Chromium 与 Node.js 的许可声明：
 
 ---
 
+## 时间轴弹幕
+
+分时弹幕请求、签名和时间轴显示移植自 `jackotom/hongguo-drama` 的 `v6.2`，其实现参考 `dawei233/hongguo-drama` 提交 `c884fab6c6e36ad38173e251738b9b35f958383f`。相关文件保留来源声明，沿用 GPL-3.0 许可。 [桌面版来源](https://github.com/jackotom/hongguo-drama/tree/v6.2) · [原始实现](https://github.com/dawei233/hongguo-drama/tree/c884fab6c6e36ad38173e251738b9b35f958383f)
+
 ## 内置可执行程序
 
 ### Windows FFmpeg / FFprobe（GPLv3-or-later）

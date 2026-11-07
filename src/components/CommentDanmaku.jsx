@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_DANMAKU_SETTINGS, normalizeDanmakuSettings, createCommentFeed, appendCommentPage, commentIsBlocked, advanceDanmaku } from './danmakuModel.mjs';
+import { DEFAULT_DANMAKU_SETTINGS, normalizeDanmakuSettings, createCommentFeed, appendCommentPage, commentIsBlocked, advanceDanmaku, resizeDanmaku } from './danmakuModel.mjs';
+import { useOfficialDanmaku } from './OfficialDanmaku';
+import { useDanmakuSource, writeDanmakuSource } from './danmakuSource.mjs';
+import { SOURCE_LABELS } from './danmakuOfficial.mjs';
 import './CommentDanmaku.css';
 
 const STORAGE_KEY = 'hongguo:comment-danmaku:v1';
@@ -9,18 +12,34 @@ const readPreferences = () => {
   catch { return { enabled: false, ...DEFAULT_DANMAKU_SETTINGS }; }
 };
 
-export function useCommentDanmaku({ seriesId, episodeId, active }) {
+// 视觉设置（开关/字号/透明度/屏蔽词等）两种来源共用；换源不清掉用户调参。
+export function useDanmakuPreferences() {
   const [preferences, setPreferences] = useState(readPreferences);
   const [saveError, setSaveError] = useState('');
-  const [visible, setVisible] = useState(() => !document.hidden);
+  const update = patch => {
+    const next = { enabled: preferences.enabled, ...preferences, ...patch };
+    const validated = { enabled: next.enabled === true, ...normalizeDanmakuSettings(next) };
+    setPreferences(validated);
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(validated)); setSaveError(''); }
+    catch { setSaveError('设置已生效，但本机保存失败'); }
+  };
+  const settings = useMemo(() => normalizeDanmakuSettings(preferences), [preferences]);
+  return { enabled: preferences.enabled && true, settings, saveError,
+    toggle: () => update({ enabled: !preferences.enabled }),
+    update, reset: () => update(DEFAULT_DANMAKU_SETTINGS) };
+}
+
+export function useCommentDanmaku({ seriesId, episodeId, active, preferences }) {
   const [, refresh] = useState(0);
+  const [visible, setVisible] = useState(() => !document.hidden);
+  const { enabled: prefEnabled, settings, saveError, toggle, update, reset } = preferences || useDanmakuPreferences();
   const feed = useMemo(() => createCommentFeed(seriesId, episodeId), [seriesId, episodeId]);
   const currentFeed = useRef(feed);
   currentFeed.current = feed;
-  const preferencesRef = useRef(preferences);
-  preferencesRef.current = preferences;
+  const preferencesRef = useRef(settings);
+  preferencesRef.current = settings;
   const supported = /^\d{6,30}$/.test(String(seriesId || '')) && /^\d{6,30}$/.test(String(episodeId || ''));
-  const enabled = preferences.enabled && supported;
+  const enabled = prefEnabled && supported;
   const running = enabled && active && visible;
 
   useEffect(() => {
@@ -52,20 +71,27 @@ export function useCommentDanmaku({ seriesId, episodeId, active }) {
     return () => window.clearInterval(timer);
   }, [running, feed]);
 
-  const update = patch => {
-    const next = { enabled: preferences.enabled, ...preferences, ...patch };
-    const validated = { enabled: next.enabled === true, ...normalizeDanmakuSettings(next) };
-    setPreferences(validated);
-    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(validated)); setSaveError(''); }
-    catch { setSaveError('设置已生效，但本机保存失败'); }
-  };
-  const settings = useMemo(() => normalizeDanmakuSettings(preferences), [preferences]);
   const status = !supported ? '仅红果来源的当前集支持评论弹幕' : !enabled ? '开启后展示本集公开评论' : !active ? '播放本集后显示评论弹幕'
     : !visible ? '' : feed.error || (feed.loading ? '正在加载本集后续评论…' : feed.notice) || (!feed.loaded ? '正在加载本集评论…'
-      : feed.comments.length ? `已读取本集 ${feed.comments.length} 条评论${feed.hasMore ? '，播放时继续加载' : '，当前可用评论已读取'}` : '本集暂无可显示的公开评论');
-  return { enabled, supported, running, settings, feed, comments: feed.comments, status, saveError, error: feed.error,
-    loading: running && feed.loading, toggle: () => update({ enabled: !preferences.enabled }), update,
-    reset: () => update(DEFAULT_DANMAKU_SETTINGS), retry: () => { feed.error = ''; feed.emptyPages = 0; refresh(value => value + 1); } };
+      : feed.comments.length ? `已读取本集 ${feed.comments.length} 条评论${feed.hasMore ? '，播放时继续加载' : '，当前可用评论已读取'}` : '官网未公开本集评论');
+  return { sourceKind: 'comments', enabled, supported, running, settings, feed, comments: feed.comments, status, saveError, error: feed.error,
+    loading: running && feed.loading, toggle, update, reset,
+    retry: () => { feed.error = ''; feed.emptyPages = 0; refresh(value => value + 1); } };
+}
+
+/**
+ * 统一弹幕控制器：按记住的来源返回「时间轴弹幕」或「本集评论」。
+ * 两种来源共用同一份视觉设置；切集后迟到的数据归原分集。
+ */
+export function useDanmaku({ seriesId, episodeId, active }) {
+  const preferences = useDanmakuPreferences();
+  const source = useDanmakuSource();
+  const comments = useCommentDanmaku({ seriesId, episodeId, active: active && source === 'comments', preferences });
+  const official = useOfficialDanmaku({ seriesId, vid: episodeId, active: active && source === 'official', preferences });
+  // 时间轴弹幕失败时保留切换到本集评论的入口；评论按评论方式显示。
+  return source === 'official'
+    ? { ...official, sourceLabel: SOURCE_LABELS.official, setSource: writeDanmakuSource }
+    : { ...comments, sourceLabel: SOURCE_LABELS.comments, setSource: writeDanmakuSource };
 }
 
 export default function CommentDanmaku({ videoRef, source, available, danmaku }) {
@@ -73,7 +99,7 @@ export default function CommentDanmaku({ videoRef, source, available, danmaku })
   const nodes = useRef(new Map());
   const [items, setItems] = useState([]);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const { running, settings, comments, status, error, loading, feed } = danmaku;
+  const { running, settings, comments, feed, loading, error, status } = danmaku;
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -103,6 +129,7 @@ export default function CommentDanmaku({ videoRef, source, available, danmaku })
     const options = () => ({ width, height, settings, reducedMotion, bottomInset: Math.max(76, (controls?.clientHeight || 0) + 8) });
     const reset = () => {
       state.items = [];
+      state.replayQueue = [];
       state.cooldown = 0;
       previous = 0;
       setItems([...state.items]);
@@ -128,8 +155,10 @@ export default function CommentDanmaku({ videoRef, source, available, danmaku })
       const nextWidth = layer.clientWidth;
       const nextHeight = layer.clientHeight;
       if (nextWidth === width && nextHeight === height) return;
+      // 进出全屏或切换布局时保留并重排当前弹幕，不清空等待重新入场。
+      if (!resizeDanmaku(state, options(), { ...options(), width: nextWidth, height: nextHeight })) return;
       width = nextWidth; height = nextHeight;
-      reset(); start();
+      setItems([...state.items]); paint(); start();
     };
     // Settings keep current trajectories and consumption; only new arrivals use the new lanes.
     start();
@@ -151,13 +180,16 @@ export default function CommentDanmaku({ videoRef, source, available, danmaku })
 }
 
 export function DanmakuSettings({ danmaku, onClose, panelRef, maxHeight }) {
-  const { settings, update } = danmaku;
-  return <div className="danmaku-settings" ref={panelRef} role="dialog" aria-label="评论弹幕设置" data-player-menu style={{ maxHeight }}
+  const { settings, update, sourceKind } = danmaku;
+  return <div className="danmaku-settings" ref={panelRef} role="dialog" aria-label="弹幕设置" data-player-menu style={{ maxHeight }}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
-    <div className="danmaku-settings-heading"><strong>评论弹幕</strong><button type="button" aria-label="关闭弹幕设置" onClick={onClose}>
+    <div className="danmaku-settings-heading"><strong>{sourceKind === 'official' ? '时间轴弹幕' : '本集评论'}</strong><button type="button" aria-label="关闭弹幕设置" onClick={onClose}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
     </button></div>
-    <p>本集公开评论依次展示，与视频时间无对应。全文可在「剧评与收藏」查看。</p>
+    <label>弹幕来源<select aria-label="弹幕来源" value={sourceKind || 'comments'} onChange={event => danmaku.setSource?.(event.target.value)}><option value="official">时间轴弹幕</option><option value="comments">本集评论（备用）</option></select></label>
+    <p>{sourceKind === 'official'
+      ? '按视频时间展示本集弹幕，暂停、拖动进度、倍速与切集时按当前媒体时间重新定位。接口异常时可切换本集评论。'
+      : '本集公开评论依次展示，与视频时间无对应；只有校验为当前集的公开评论才会显示。全文可在「剧评与收藏」查看。'}</p>
     <label>不透明度 <output>{settings.opacity}%</output><input autoFocus aria-label="弹幕不透明度" type="range" min="20" max="100" step="5" value={settings.opacity} onChange={event => update({ opacity: Number(event.target.value) })} /></label>
     <label>字号 <output>{settings.fontSize}px</output><input aria-label="弹幕字号" type="range" min="16" max="32" step="2" value={settings.fontSize} onChange={event => update({ fontSize: Number(event.target.value) })} /></label>
     <label>滚动速度 <output>{settings.speed}×</output><input aria-label="弹幕滚动速度" type="range" min="0.5" max="2" step="0.25" value={settings.speed} onChange={event => update({ speed: Number(event.target.value) })} /></label>
@@ -168,6 +200,6 @@ export function DanmakuSettings({ danmaku, onClose, panelRef, maxHeight }) {
     <p>内置词含常见涉政及辱骂词；自定义词始终生效。命中后整条隐藏，仅保存在本机。词库无法覆盖所有表达或变体。</p>
     <p>默认在上半屏显示。跟随播放暂停与倍速；系统开启减少动态效果时，改为静态轮换。</p>
     <p role="status">{danmaku.saveError || danmaku.status}</p>
-    <div className="danmaku-settings-actions">{danmaku.error && <button type="button" onClick={danmaku.retry}>继续加载</button>}<button type="button" onClick={danmaku.reset}>恢复默认</button></div>
+    <div className="danmaku-settings-actions">{danmaku.error && <button type="button" onClick={danmaku.retry}>重试加载</button>}<button type="button" onClick={danmaku.reset}>恢复默认</button></div>
   </div>;
 }

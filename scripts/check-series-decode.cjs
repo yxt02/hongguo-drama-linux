@@ -10,33 +10,32 @@ const originals = ui => ui.prepares.filter(p => !p.prefetch);
 (async () => {
   let failed = 0;
   const test = async (name, fn) => { try { await fn(); console.log('PASS ' + name); } catch (error) { failed++; console.error('FAIL ' + name + ': ' + error.stack); } };
-  await test('successful decode repair remembers the entire series and skips original playback for next episodes', async () => {
+  await test('successful repair affects only the current episode', async () => {
     const storage = new Map(), ui = mount({ storage, props: target() });
     await ui.flush(); ui.metadata(); ui.media.currentTime = 19; ui.error(3); await ui.flush();
-    assert.equal(ui.transcodes.length, 1); assert.deepEqual(JSON.parse(storage.get(KEY)), ['A']);
-    assert.ok(ui.button('本剧：兼容解码'));
+    assert.equal(ui.transcodes.length, 1); assert.equal(storage.has(KEY), false);
+    assert.ok(ui.button('本剧：自动解码'));
     ui.metadata(); assert.equal(ui.media.currentTime, 19);
     ui.episode(2); await ui.flush();
-    assert.equal(ui.transcodes.length, 2); assert.equal(ui.transcodes[1].vidIndex, 2);
-    assert.equal(originals(ui).length, 1, 'next episode must not first attempt the original decoder');
-    assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-compat.mp4'); ui.unmount();
+    assert.equal(ui.transcodes.length, 1);
+    assert.ok(ui.find(n => n.type === 'video').props.src.startsWith('hongguo-stream://')); ui.unmount();
   });
   await test('series preference survives restart, is isolated from other series, and can be cleared', async () => {
     const storage = new Map([[KEY, '["A"]']]);
     const ui = mount({ storage, props: target() }); await ui.flush();
-    assert.equal(ui.transcodes.length, 1); assert.equal(originals(ui).length, 0);
+    assert.equal(ui.transcodes.length, 1); assert.equal(originals(ui).length, 1);
     ui.button('本剧：兼容解码').props.onClick(); await ui.flush();
     assert.deepEqual(JSON.parse(storage.get(KEY)), []);
-    ui.episode(2); await ui.flush(); assert.equal(originals(ui).length, 1); assert.equal(ui.transcodes.length, 1); ui.unmount();
+    ui.episode(2); await ui.flush(); assert.equal(originals(ui).length, 2); assert.equal(ui.transcodes.length, 1); ui.unmount();
     storage.set(KEY, '["A"]');
     const other = mount({ storage, seriesId: 'B', props: target('B') }); await other.flush();
     assert.equal(other.transcodes.length, 0); assert.equal(originals(other).length, 1); other.unmount();
   });
-  await test('confirmed unsupported HEVC learns only after successful conversion', async () => {
+  await test('confirmed unsupported HEVC falls back independently per episode', async () => {
     const storage = new Map(), ui = mount({ storage, props: target(), prepare: () => ({ success:true, url:'hongguo-stream://hevc', codec:'hevc' }) });
     ui.setHevcAnswer(''); await ui.flush();
-    assert.deepEqual(JSON.parse(storage.get(KEY)), ['A']); ui.episode(2); await ui.flush();
-    assert.equal(originals(ui).length, 1); assert.equal(ui.transcodes.length, 2); ui.unmount();
+    assert.equal(storage.has(KEY), false); ui.episode(2); await ui.flush();
+    assert.equal(originals(ui).length, 2); assert.equal(ui.transcodes.length, 2); ui.unmount();
   });
   await test('HTTP source failures and failed conversions never learn a series-wide decoder problem', async () => {
     const storage = new Map(), ui = mount({ storage, props: target() }); await ui.flush();
@@ -46,12 +45,12 @@ const originals = ui => ui.prepares.filter(p => !p.prefetch);
     await failure.flush(); failure.error(3); await failure.flush();
     assert.equal(storage.has(KEY), false); failure.unmount();
   });
-  await test('local downloads inherit the series mode without deleting or reusing a failed original', async () => {
+  await test('local automatic repair does not change the next original', async () => {
     const storage = new Map(), ui = mount({ storage, local:true }); await ui.flush();
     ui.metadata(); ui.error(3); await ui.flush(); assert.equal(ui.transcodes.length, 1);
-    ui.episode(2); await ui.flush(); assert.equal(ui.transcodes.length, 2);
-    assert.equal(ui.transcodes[1].filePath, '/mock-2.mp4');
-    assert.equal(ui.prepares.length, 0); assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-compat.mp4'); ui.unmount();
+    ui.episode(2); await ui.flush(); assert.equal(ui.transcodes.length, 1);
+    assert.equal(ui.transcodes[0].filePath, '/mock-1.mp4');
+    assert.equal(ui.prepares.length, 0); assert.equal(ui.find(n => n.type === 'video').props.src, 'file:///mock-2.mp4'); ui.unmount();
   });
   await test('compatibility preparation is serial, future-first and limited to the current plus/minus five window', async () => {
     const gates = [], storage = new Map([[KEY, '["A"]']]); let active = 0, peak = 0;
@@ -60,8 +59,8 @@ const originals = ui => ui.prepares.filter(p => !p.prefetch);
       return gate.promise.finally(() => active--);
     } });
     await ui.flush(); ui.metadata(); await ui.flush(); assert.equal(gates.length, 1);
-    for (let i = 0; i < 9; i++) { assert.ok(gates[i]); gates[i].resolve({success:true}); await ui.flush(); }
-    assert.equal(peak, 1); assert.deepEqual(gates.map(g => g.p.vidIndex), [11,13,14,15,9,8,7,6,5]);
+    for (let i = 0; i < 2; i++) { assert.ok(gates[i]); gates[i].resolve({success:true}); await ui.flush(); }
+    assert.equal(peak, 1); assert.deepEqual(gates.map(g => g.p.vidIndex), [11,13]);
     assert.ok(gates.every(g => g.p.background && g.p.quality === 'auto' && Math.abs(g.p.vidIndex - 10) <= 5));
     assert.ok(ui.windows.every(w => w.episodes.length <= 11)); ui.unmount();
   });
@@ -98,6 +97,22 @@ const originals = ui => ui.prepares.filter(p => !p.prefetch);
     gate.resolve({success:true,url:'file:///compatible.mp4'});
     assert.equal((await background).cancelled,true); assert.equal((await foreground).success,true);
   });
+  await test('sequential switch promotes the existing compatibility request and holds its original', async () => {
+    const gate = deferred(), ui = mount({ storage: new Map([[KEY, '["A"]']]), episodeCount: 3, props: target(),
+      prepare: p => ({ success: true, url: 'hongguo-stream://v' + p.vidIndex, streamId: 'stream-' + p.vidIndex, codec: 'hevc' }),
+      backgroundTranscode: () => gate.promise });
+    await ui.flush(); ui.metadata(); await ui.flush();
+    const job = ui.backgroundTranscodes[0];
+    assert.equal(job.vidIndex, 2);
+    ui.episode(2); await ui.flush();
+    assert.equal(ui.transcodes.at(-1).requestId, job.requestId);
+    assert.equal(ui.transcodes.at(-1).streamId, job.streamId);
+    assert.equal(ui.prepares.filter(p => p.vidIndex === 2).length, 1);
+    assert.ok(!ui.cancelled.some(p => p.requestId === job.requestId));
+    gate.resolve({ success: true }); await ui.flush();
+    assert.ok(!ui.releases.some(p => p.streamId === job.streamId));
+    ui.unmount();
+  });
   await test('late cancelled repair cannot teach a series preference after leaving the episode', async () => {
     const gate=deferred(), storage=new Map(), ui=mount({storage,props:target(),transcode:()=>gate.promise});
     await ui.flush(); ui.error(3); await ui.flush(); ui.episode(2); await ui.flush();
@@ -110,5 +125,5 @@ const originals = ui => ui.prepares.filter(p => !p.prefetch);
     assert.ok(count>0 && count<=3); await ui.flush(); assert.equal(ui.transcodes.length,count);
     ui.unmount();
   });
-  console.log((11-failed)+'/11 series decoder checks passed'); process.exitCode=failed?1:0;
+  process.exitCode=failed?1:0;
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>roots.forEach(root=>fs.rmSync(root,{recursive:true,force:true})));
