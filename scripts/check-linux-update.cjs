@@ -19,6 +19,8 @@ async function bundle(root, version) {
 }
 (async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'hongguo-update-test-'));
+  const oldDataHome = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = path.join(temp, 'data');
   try {
     assert.equal(releasesApi('linux'), 'https://api.github.com/repos/yxt02/hongguo-drama-linux/releases/latest');
     assert.equal(availableRelease({ tag_name: 'v1.74.1-linux' }, '1.74.0', { platform: 'linux' }).version, '1.74.1');
@@ -58,13 +60,24 @@ async function bundle(root, version) {
     await assert.rejects(u.download(release, await fs.mkdtemp(path.join(temp, 'cancel-')), { request: fakeRequest(), signal: controller.signal }));
     await assert.rejects(u.waitForExit(process.pid), /无效/);
     await fs.writeFile(path.join(temp, 'settings.json'), 'keep me');
+    const applications = path.join(process.env.XDG_DATA_HOME, 'applications');
+    const desktop = path.join(applications, 'hongguo-drama.desktop');
+    await fs.mkdir(applications, { recursive: true });
+    const legacyDesktop = `[Desktop Entry]\nExec="${target}/红果短剧.sh" %U\nIcon=${target}/icon.png\nStartupWMClass=hongguo-downloader\nComment=Keep this\n`;
+    await fs.writeFile(desktop, legacyDesktop);
     let renames = 0;
     await assert.rejects(u.install(incoming, target, '1.74.1', { rename: async (...args) => { if (++renames === 2) throw new Error('simulated rename failure'); return fs.rename(...args); } }), /simulated/);
     assert.equal(u.validateBundle(target), '1.74.0', 'replacement failure restores old install');
+    assert.equal(await fs.readFile(desktop, 'utf8'), legacyDesktop, 'rollback preserves the desktop entry');
     await fs.mkdir(target + '.update-lock'); await assert.rejects(u.install(incoming, target, '1.74.1'), /EEXIST/); await fs.rmdir(target + '.update-lock');
     const result = await u.install(incoming, target, '1.74.1');
     assert.equal(u.validateBundle(target), '1.74.1'); assert.equal(u.validateBundle(result.backup), '1.74.0');
     assert.equal(await fs.readFile(path.join(temp, 'settings.json'), 'utf8'), 'keep me');
+    assert.equal(await fs.readFile(desktop, 'utf8'), legacyDesktop.replace('StartupWMClass=hongguo-downloader', 'StartupWMClass=hongguo-drama'));
     console.log('PASS Linux update: fork/tag selection, complete assets, ASAR version, checksum, cancellation, tar paths/types, process guard, lock, rollback, backup, preserved data');
-  } finally { await fs.rm(temp, { recursive: true, force: true }); }
+  } finally {
+    if (oldDataHome === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = oldDataHome;
+    await fs.rm(temp, { recursive: true, force: true });
+  }
 })().catch(error => { console.error(error); process.exitCode = 1; });

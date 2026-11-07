@@ -62,6 +62,12 @@ assert.ok(plainExec > sandboxExec, '启动器必须保留不加 --no-sandbox 的
 
 // ---- install script -------------------------------------------------------
 const installer = read('scripts/install-linux.sh');
+const { desktopName, build } = JSON.parse(read('package.json'));
+const desktopId = desktopName.replace(/\.desktop$/, '');
+assert.equal(desktopName, 'hongguo-drama.desktop');
+assert.equal(build.linux.desktop.entry.StartupWMClass, desktopId);
+assert.ok(installer.includes(`$DESKTOP_DIR/${desktopName}`));
+assert.ok(installer.includes(`StartupWMClass=${desktopId}\n`));
 
 assert.match(
   installer,

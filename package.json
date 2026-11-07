@@ -2,6 +2,7 @@
   "name": "hongguo-downloader",
   "version": "1.74.11",
   "description": "红果短剧播放与下载",
+  "desktopName": "hongguo-drama.desktop",
   "main": "main.js",
   "license": "GPL-3.0",
   "scripts": {
@@ -185,7 +186,7 @@
           "Name": "红果短剧",
           "Comment": "发现好剧，接着上次看",
           "Categories": "AudioVideo;Video;Player;",
-          "StartupWMClass": "hongguo-downloader"
+          "StartupWMClass": "hongguo-drama"
         }
       },
       "extraResources": [
