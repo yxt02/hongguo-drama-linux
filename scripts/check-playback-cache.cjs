@@ -25,7 +25,7 @@ function load(directory) {
   context.resolveFfmpeg = () => '/fixture/ffprobe';
   context.probeVideoInfo = async (_probe, file) => {
     metrics.probes++; const data = fs.readFileSync(file);
-    return data.length >= 4096 && data[0] === 1 ? { codec: 'hevc', w: data[1] === 7 ? 720 : 1080, h: data[1] === 7 ? 1280 : 1920, duration: 5 } : null;
+    return data.length >= 4096 && data[0] === 1 ? { codec: 'hevc', w: data[1] === 7 ? 720 : 1080, h: data[1] === 7 ? 1280 : 1920, duration: 12 } : null;
   };
   const bytes = info => { const b = Buffer.alloc(4096, 1); if (info.url.endsWith('720p')) b[1] = 7; return b; };
   const response = info => { metrics.transfers++; return { headers: { 'content-length': '4096' }, data: Readable.from([bytes(info)]) }; };
@@ -78,13 +78,14 @@ if (require.main === module) (async () => {
     await release(restarted, next); restarted.context.clearOnlineCache();
   });
   await check('upgrade discards old web and unknown Hongguo automatic caches, retains App and manual files', async () => {
-    for (const origin of ['web', 'api', undefined, 'app', 'manual']) {
+    for (const origin of ['web', 'api', undefined, 'app', 'manual', 'web-public']) {
       const h = load(); window(h, 10); const first = await prepare(h, 10); await release(h, first);
       const entry = h.run("onlineCache.get('disk:auto:v10')");
       entry.mediaSource = origin; policy.save(entry);
       const manual = path.join(h.root, 'user-download.mp4'); fs.writeFileSync(manual, 'original');
       const restarted = load(h.root); window(restarted, 10); const next = await prepare(restarted, 10);
-      assert.equal(next.success, true); const keep = ['app', 'manual'].includes(origin);
+      assert.equal(next.success, true); const keep = ['app', 'manual', 'web-public'].includes(origin);
+      assert.equal(next.publicFallback, origin === 'web-public');
       assert.equal(next.cached, keep); assert.equal(restarted.metrics.transfers, keep ? 0 : 1);
       assert.equal(fs.existsSync(entry.filePath), keep); assert.equal(fs.readFileSync(manual, 'utf8'), 'original');
       await release(restarted, next); restarted.context.clearOnlineCache();
@@ -96,6 +97,13 @@ if (require.main === module) (async () => {
     const restarted = load(h.root); window(restarted, 10); const repaired = await prepare(restarted, 10);
     assert.equal(repaired.success, true); assert.equal(repaired.cached, false); assert.equal(restarted.metrics.transfers, 1);
     await release(restarted, repaired); restarted.context.clearOnlineCache();
+  });
+  await check('a 10-second public preview is rejected before cache publication', async () => {
+    const h = load();
+    h.context.probeVideoInfo = async () => ({ codec: 'h264', w: 360, h: 640, duration: 10 });
+    await assert.rejects(h.context.prepareDiskEpisode('11', '1', 'auto',
+      { url: 'https://fixture.invalid/preview', source: 'web', publicFallback: true }, new AbortController().signal), /短预览/);
+    assert.deepEqual(fs.readdirSync(h.context.playbackCacheDir()), []);
   });
   await check('distant jump cancels pending work and leaves no partial disk file', async () => {
     const h = load(), gate = defer(); window(h, 10);

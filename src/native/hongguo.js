@@ -10,10 +10,11 @@ const API = "https://api5-normal-sinfonlineb.fqnovel.com";
 const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
-// 官网用于目录、分享和分集身份；播放与下载保持 App 高清优先，不自动切换网页低清。
+// App 高清优先。自动在线播放可使用官网播放器提供的完整公开分集。
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
+const PUBLIC_PLAY_URL = SITE_ORIGIN + "/api/video/protected/fallback-play-info";
 let trustedOfficialDnsAllowed = false;
 function configureNetwork({ allowTrustedDns = false } = {}) {
   trustedOfficialDnsAllowed = allowTrustedDns === true;
@@ -190,6 +191,37 @@ function normalizeVideoUrl(raw) {
     .replace(/&amp;/g, '&')
     .replace(/([?&])Range=[^&]*/gi, '$1')
     .replace(/[?&]$/, '');
+}
+
+// Same anonymous request as the public website player (upstream issue #179).
+// The SEO player page can expose a 10-second preview and is not used here.
+async function fetchPublicPlayback(vid) {
+  if (!/^\d{1,30}$/.test(String(vid))) return null;
+  const response = await axios({
+    ...webMediaRequestOptions(PUBLIC_PLAY_URL, { trustedOfficialDns: trustedOfficialDnsAllowed }),
+    url: PUBLIC_PLAY_URL,
+    method: 'POST',
+    headers: { 'User-Agent': WEB_UA, Accept: 'application/json', 'Content-Type': 'application/json', Referer: WEB_REFERER },
+    data: { item_id: String(vid) },
+    timeout: 6000,
+    maxRedirects: 0,
+    maxContentLength: 64 * 1024,
+    responseType: 'json',
+    validateStatus: () => true,
+  });
+  const data = response.data;
+  if (response.status !== 200) throw Object.assign(new Error('官网播放请求失败'), { status: response.status });
+  if (!data || typeof data !== 'object' || Number(data.base_resp?.StatusCode ?? data.code ?? 0) !== 0
+      || (data.item_id != null && String(data.item_id) !== String(vid))) return null;
+  const expires = Number(data.url_expire);
+  if (expires > 0 && expires * 1000 <= Date.now() + 5000) return null;
+  let url;
+  try { url = new URL(normalizeVideoUrl(data.main_url)); } catch (_) { return null; }
+  if (url.protocol !== 'https:' || (url.port && url.port !== '443') || !isPublicMediaUrl(url.href)
+      || !/(^|\.)(?:qznovelvod|fqnovelvod|douyinvod)\.com$/i.test(url.hostname)) {
+    throw Object.assign(new Error('官网返回了不受支持的片源地址'), { code: 'SECURITY_BLOCKED' });
+  }
+  return { url: url.href, source: 'web', publicFallback: true, vid: String(vid), userAgent: WEB_UA, referer: WEB_REFERER };
 }
 
 /** 拉取官网页面 HTML */
@@ -627,12 +659,25 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('custom:') || String(sid).startsWith('custom:')) return require('./custom-source').fetchPlayUrlSingle(vid, sid, options);
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
-    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
+    const allowPublicFallback = options.allowPublicFallback === true && quality === 'auto';
+    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}${allowPublicFallback ? ':public' : ''}`;
     return await cachedRequest(cacheKey, 30000, async () => {
       try {
         return await require('./app-source').fetchAppPlayUrl(String(vid), { quality, preferQuality: true });
       } catch (error) {
-        throw unavailableSources([sourceFailure('app', error)], quality);
+        const appFailure = sourceFailure('app', error);
+        const failures = [appFailure];
+        if (allowPublicFallback && ['EMPTY_RESPONSE', 'NETWORK_ERROR', 'TIMEOUT', 'MISSING_MODEL', 'NO_PLAYABLE_SOURCE']
+          .includes(appFailure.code)) {
+          try {
+            const web = await fetchPublicPlayback(vid);
+            if (web) return web;
+            failures.push(sourceFailure('web'));
+          } catch (webError) {
+            failures.push(sourceFailure('web', webError));
+          }
+        }
+        throw unavailableSources(failures, quality);
       }
     }, options);
   } catch (error) {

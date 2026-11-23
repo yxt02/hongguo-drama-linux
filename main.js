@@ -703,7 +703,7 @@ async function executeHongguoDownload(task) {
     const cached = playbackEntry(vid, quality) || onlineCache.get(String(vid));
     const sourceId = /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo';
     let reusedCache = false;
-    if (cached?.complete && cached.vid === String(vid) && cached.source === sourceId
+    if (cached?.complete && cached.vid === String(vid) && cached.source === sourceId && cached.mediaSource !== 'web-public'
       && cached.seriesId === String(hongguoInfo?.series_id || '') && cached.size > 0
       && (cached.filePath || Buffer.isBuffer(cached.buffer) && cached.buffer.length === cached.size)) {
       if (cached.filePath) {
@@ -1919,7 +1919,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       let info;
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
-          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0 }), controller.signal, 30000);
+          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0,
+            ...(options.allowPublicFallback ? { allowPublicFallback: true } : {}) }), controller.signal, 30000);
       } catch (error) {
         cancelled();
         if (!recoverable(error)) throw error;
@@ -2307,17 +2308,19 @@ ipcMain.handle('set-playback-window', (_event, payload) => {
     return { success: true };
   } catch (error) { return { success: false, error: error.message }; }
 });
-async function probePlaybackFile(file, quality, task) {
+async function probePlaybackFile(file, quality, task, { publicFallback = false } = {}) {
   const probe = resolveFfmpeg('ffprobe');
   const info = probe ? await probeVideoInfo(probe, file, task) : null;
   if (!info || ![info.w, info.h, info.duration].every(n => Number.isFinite(n) && n > 0)) throw new Error('缓存视频不完整或缺少有效视频轨');
+  if (publicFallback && info.duration <= 11) throw new Error('官网仅提供短预览，无法播放完整分集');
   if (!meetsDownloadQuality({ width: info.w, height: info.h }, quality)) throw new Error('片源未达到所选清晰度，未自动降级');
   return { codec: info.vcodec || info.codec || '', width: info.w, height: info.h, actualQuality: Math.min(info.w, info.h) + 'p' };
 }
 async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onProgress) {
   const directory = await fsp.mkdtemp(playbackCache.temporaryPrefix(playbackCacheDir(), playbackCache.cacheKey(vid, quality)));
   const entry = { vid: String(vid), seriesId: String(seriesId), quality, filePath: path.join(directory, 'video.mp4'),
-    disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo', mediaSource: playInfo.source, codec: playInfo.codec || '' };
+    disk: { directory, readers: 0, managed: true }, source: /^custom:[^:]+/.exec(String(vid))?.[0] || /^(xifan|hema):/.exec(String(vid))?.[1] || 'hongguo',
+    mediaSource: playInfo.publicFallback ? 'web-public' : playInfo.source, codec: playInfo.codec || '' };
   const input = path.join(directory, 'input.part');
   try {
     if (playInfo.format === 'hls') await prepareHlsFile(playInfo, entry.filePath, { signal, onProgress });
@@ -2345,7 +2348,7 @@ async function prepareDiskEpisode(vid, seriesId, quality, playInfo, signal, onPr
       } else await fsp.rename(input, entry.filePath);
     }
     if (signal.aborted) throw new Error('已取消播放');
-    Object.assign(entry, await probePlaybackFile(entry.filePath, quality));
+    Object.assign(entry, await probePlaybackFile(entry.filePath, quality, undefined, { publicFallback: entry.mediaSource === 'web-public' }));
     if (!entry.codec) entry.codec = playInfo.codec || '';
     const stat = await fsp.stat(entry.filePath);
     entry.size = stat.size; entry.fileMtime = stat.mtimeMs;
@@ -2398,7 +2401,8 @@ async function prepareManagedPlayback(payload) {
       session.entry = entry; // Pin the file while validation yields to cancellation/cleanup.
       try {
         if (!fs.existsSync(entry.filePath) || fs.statSync(entry.filePath).size !== entry.size) throw new Error('缓存文件大小已变化');
-        Object.assign(entry, await probePlaybackFile(entry.filePath, quality), { validated: true, fileMtime: fs.statSync(entry.filePath).mtimeMs });
+        Object.assign(entry, await probePlaybackFile(entry.filePath, quality, undefined, { publicFallback: entry.mediaSource === 'web-public' }),
+          { validated: true, fileMtime: fs.statSync(entry.filePath).mtimeMs });
       }
       catch (_) { deleteOnlineCacheEntry(key); session.entry = null; disposeOnlineDisk(entry); entry = null; }
       if (!onlineSessions.has(streamId)) { disposeOnlineDisk(entry); throw new Error('已取消播放'); }
@@ -2412,7 +2416,7 @@ async function prepareManagedPlayback(payload) {
         job.promise = Promise.resolve().then(async () => {
           let prepared = manual ? await prepareManualPlayback(manual.savePath, descriptor, controller.signal) : null;
           if (!prepared) prepared = await withMediaRecovery(String(vid), seriesId,
-            { playInfo: checked, force, quality, preferQuality: true, signal: controller.signal },
+            { playInfo: checked, force, quality, preferQuality: true, allowPublicFallback: true, signal: controller.signal },
             candidate => prepareDiskEpisode(vid, seriesId, quality, candidate, controller.signal, (received, total, phase) => {
               for (const active of onlineSessions.values()) if (active.cacheKey === key) sendToRenderer('online-play-progress',
                 { vid, seriesId, vidIndex, requestId: active.requestId, received, total, percent: total ? Math.floor(received / total * 100) : 0, phase: phase || 'downloading' });
@@ -2433,7 +2437,8 @@ async function prepareManagedPlayback(payload) {
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     session.entry = { ...entry }; entry.lastUsed = Date.now();
     return { success: true, url: STREAM_SCHEME + '://play/' + streamId, streamId, cached, size: entry.size,
-      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality };
+      codec: entry.codec, width: entry.width, height: entry.height, actualQuality: entry.actualQuality,
+      publicFallback: entry.mediaSource === 'web-public' };
   } catch (error) { if (streamId) releaseOnlineSession(streamId); return { success: false, error: error.message }; }
 }
 
@@ -2734,11 +2739,12 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       try {
         const metadata = JSON.parse(fs.readFileSync(out + '.json', 'utf8'));
         if (metadata.identity !== identity || metadata.size !== fs.statSync(out).size) throw new Error('片源已变化');
-        const info = await probePlaybackFile(out, quality, job);
+        const info = await probePlaybackFile(out, quality, job, { publicFallback: metadata.publicFallback === true });
         checkCancelled();
         if (info.codec !== 'h264') throw new Error('兼容缓存编码无效');
         fs.utimesSync(out, new Date(), new Date());
-        return { success: true, url: localPlayUrl(out), size: fs.statSync(out).size, cached: true, ...info };
+        return { success: true, url: localPlayUrl(out), size: fs.statSync(out).size, cached: true,
+          publicFallback: metadata.publicFallback === true, ...info };
       } catch (error) {
         checkCancelled();
         try { fs.unlinkSync(out); } catch (_) {}
@@ -2760,7 +2766,7 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
         await fsp.writeFile(tmpInput, cached.buffer); inputPath = tmpInput;
       } else {
         // Every provider uses the same HLS/MP4 preparation, including a forced rebuild.
-        const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, signal },
+        const prepared = await withMediaRecovery(vid, seriesId, { force: !!force, quality, preferQuality: true, allowPublicFallback: true, signal },
           candidate => prepareDiskEpisode(String(vid), seriesId, quality, candidate, signal, () => {}));
         diskInput = prepared; prepared.disk.readers++; inputPath = prepared.filePath;
       }
@@ -2856,13 +2862,14 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
     if (playbackWindow && !withinPlaybackWindow({ vid: String(payload.vid || ''), seriesId: String(seriesId), quality })) throw new Error('该集已离开自动缓存范围');
     fs.renameSync(tmpOut, out);
     const size = fs.statSync(out).size;
-    fs.writeFileSync(out + '.json', JSON.stringify({ version: 1, identity, size, vid: String(payload.vid || ''), seriesId: String(seriesId), vidIndex: Number(vidIndex), quality }), { mode: 0o600 });
+    const publicFallback = diskInput?.mediaSource === 'web-public';
+    fs.writeFileSync(out + '.json', JSON.stringify({ version: 1, identity, size, vid: String(payload.vid || ''), seriesId: String(seriesId), vidIndex: Number(vidIndex), quality, publicFallback }), { mode: 0o600 });
     trimCompatCache();
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
     console.log(`[Compat] 完成 ${(size / 1048576).toFixed(1)}MB  用时 ${elapsed}s`);
 
     reportProgress({ seriesId: String(seriesId), vidIndex: Number(vidIndex), percent: 100, done: true });
-    return { success: true, url: localPlayUrl(out), size, elapsed: Number(elapsed), encoder, ...verified };
+    return { success: true, url: localPlayUrl(out), size, elapsed: Number(elapsed), encoder, publicFallback, ...verified };
   } catch (error) {
     if (signal.aborted) return compatCancelled();
     console.error('[Compat] 转码失败:', error.message);
