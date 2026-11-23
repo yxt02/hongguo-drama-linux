@@ -249,7 +249,7 @@ function SettingsPage({ active = true, preview = false }) {
             <option value="1080p">1080P</option>
             <option value="720p">720P</option>
           </select>
-          <p className="settings-hint" id="default-download-quality-hint">红果默认使用 App 源，自动模式选择最高可用画质，用于在线播放、自动缓存和新建下载。App 取源失败时可重试，不自动切到网页源；指定清晰度不可用时提示。已有手动下载保留。</p>
+          <p className="settings-hint" id="default-download-quality-hint">红果默认使用 App 最高可用画质。自动在线播放在 App 取源失败时可使用官网完整分集，并显示实际分辨率。固定清晰度和手动下载继续使用 App 源。</p>
         </div>
 
         <div className="settings-group">

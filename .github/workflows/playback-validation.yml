@@ -29,9 +29,9 @@ jobs:
           export HONGGUO_FFPROBE="$PWD/build/ffmpeg/linux-x64/ffprobe"
           npm run test:playback
           npm run build:react
-      - name: Live App media health
+      - name: Live public fallback playback
         env:
-          HONGGUO_LIVE_COMPAT: '1'
+          HONGGUO_LIVE_PUBLIC: '1'
         run: timeout 240 node scripts/check-live-app-playback.cjs
       - name: Package and verify the proposed update
         env:

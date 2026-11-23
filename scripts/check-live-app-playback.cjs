@@ -13,9 +13,17 @@ const { createRequire } = require('node:module');
 const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), req = createRequire(file);
 
 (async () => {
+  const publicFallback = process.env.HONGGUO_LIVE_PUBLIC === '1';
   const cases = process.env.HONGGUO_LIVE_CASES ? JSON.parse(process.env.HONGGUO_LIVE_CASES) : [
-    { seriesId: '7516411117833292825', vid: '7516512118569454654', vidIndex: 4, quality: '1080p', source: 'app' },
+    { seriesId: '7516411117833292825', vid: '7516512118569454654', vidIndex: 4,
+      quality: publicFallback ? 'auto' : '1080p', source: publicFallback ? 'web-public' : 'app' },
   ];
+  if (publicFallback) {
+    // Simulate the upstream App outage. All website metadata and media requests stay real.
+    req('./src/native/app-source').fetchAppPlayUrl = async () => {
+      throw Object.assign(new Error('Synthetic App outage'), { code: 'EMPTY_RESPONSE' });
+    };
+  }
   const compat = process.env.HONGGUO_LIVE_COMPAT === '1';
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hongguo-live-main-'));
   const handlers = {}, protocols = {}, app = new EventEmitter();
@@ -38,7 +46,8 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
     context.registerLocalProtocol(); context.registerStreamProtocol();
     for (const [index, selected] of cases.entries()) {
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
-      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId, { quality, force: true });
+      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId,
+        { quality, force: true, allowPublicFallback: publicFallback });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
         source: source.source || 'app', width: source.width, height: source.height, codec: source.codec,
         failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
@@ -48,6 +57,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       context.liveVid = selected.vid; context.liveQuality = quality;
       const entry = vm.runInContext('onlineCache.get(playbackCache.cacheKey(liveVid, liveQuality))', context);
       assert.equal(entry.mediaSource, selected.source || 'app');
+      assert.equal(result.publicFallback, publicFallback);
       assert.ok(entry.width > 0 && entry.height > 0);
       if (quality !== 'auto') assert.ok(Math.min(entry.width, entry.height) >= parseInt(quality, 10));
       await decode(entry.filePath);
@@ -55,6 +65,21 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 1024);
       console.log(JSON.stringify({ passed: true, stage: 'prepared-media', source: entry.mediaSource,
         width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3 }));
+      if (publicFallback) {
+        const probe = JSON.parse((await exec(ffprobe, ['-v', 'error', '-show_entries', 'format=duration',
+          '-of', 'json', entry.filePath], { timeout: 10000 })).stdout);
+        assert.ok(Number(probe.format.duration) > 11);
+        console.log(JSON.stringify({ passed: true, stage: 'public-full-episode', duration: Number(probe.format.duration) }));
+        // The default H.264 player enters through the compatibility IPC, before normal preparation.
+        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality, requestId: `live-public-compat-${index}` });
+        assert.ok(converted.success, converted.error);
+        assert.equal(converted.publicFallback, true);
+        assert.equal(converted.codec, 'h264');
+        const output = vm.runInContext(`mediaAccess.resolveLocal(${JSON.stringify(converted.url)})`, context);
+        await decode(output);
+        await handlers['release-online-play']({}, { streamId: result.streamId });
+        continue;
+      }
       if (compat) {
         const converted = await handlers['transcode-for-playback']({}, { ...selected, quality,
           filePath: entry.filePath, requestId: `live-compat-${index}` });

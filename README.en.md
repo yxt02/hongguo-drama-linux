@@ -94,7 +94,7 @@ Quitting closes background search windows and waits for download writes and tran
 ## Troubleshooting
 
 - **Blurry video:** check the actual source resolution. Conversion and picture enhancement cannot recover detail missing from the source.
-- **1080p source unavailable:** some episodes have a 1080p label but report smaller dimensions, such as 640×360. The app explains the mismatch and keeps your selected quality. Click **改用 App 最高可用画质** to explicitly try the highest available App stream. Missing dimensions and unsupported codecs receive separate messages; conversion cannot create a missing HD version.
+- **1080p source unavailable:** some episodes have a 1080p label but report smaller dimensions, such as 640×360. The app explains the mismatch and keeps your selected quality. Click **改用自动画质播放** to try automatic playback. Missing dimensions and unsupported codecs receive separate messages; conversion cannot create a missing HD version.
 - **Missing seasons:** matching depends on provider search results and consistent base titles. Retry or correct the season information manually.
 - **Long conversion:** valid compatibility caches are reused. If the original codec works on your machine, choose automatic decoding for that drama.
 - **Source or download errors:** check the network and proxy settings, then retry. Locked or unavailable content must be handled on the source platform.
@@ -118,4 +118,4 @@ This is an unofficial Linux client and is not affiliated with Hongguo.
 
 ## Playback recovery
 
-Transient anonymous device registration failures can be retried after 10 seconds without restarting. Playback model requests include signatures bound to the final host, query and request body. Empty responses allow one alternate official host attempt and at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Releases also require a live App source/download/decode/H.264/range smoke check before publication.
+Transient anonymous device registration failures can be retried after 10 seconds without restarting. Playback model requests include signatures bound to the final host, query and request body. Empty responses allow one alternate official host attempt and at most one session refresh, shared across concurrent requests and rate limited to once per minute. Network, registration, quality and decoding errors remain distinct. Automatic online playback can use the website player’s complete public episode when App lookup fails, and displays the actual resolution. Fixed quality and manual downloads retain the App policy. Releases check real public fallback media, decoding and Range reads before publication.
