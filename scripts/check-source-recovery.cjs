@@ -46,47 +46,35 @@ function routeFixture() {
   return { ...native, state };
 }
 const checks = [
-  ['automatic viewing can use full public playback only after a recoverable App failure', async () => {
-    let appError = null;
-    let webCalls = 0;
-    let response = { status: 200, data: { base_resp: { StatusCode: 0 }, main_url: media('public-full') } };
-    const native = load('hongguo.js', {
-      axios: async config => {
-        webCalls++;
-        assert.equal(config.method, 'POST');
-        assert.equal(new URL(config.url).pathname, '/api/video/protected/fallback-play-info');
-        assert.equal(config.data.item_id, '11');
-        assert.equal(config.maxRedirects, 0);
-        assert.ok(!config.headers.Cookie && !config.headers.Authorization);
-        return response;
+  ['current App source wins, legacy is bounded, and an explicit denial ends the lookup', async () => {
+    const calls = [];
+    let currentError;
+    const fallback = load('hongguo.js', {
+      axios: { get: () => assert.fail('Web must not be queried for media'), post: () => assert.fail('Web must not be queried for media') },
+      './app-source': {
+        async fetchCurrentAppPlayUrl(vid, options) {
+          calls.push(['current', options.quality]);
+          if (currentError) throw currentError;
+          return { url: media('current'), source: 'app' };
+        },
+        async fetchAppPlayUrl(vid, options) {
+          calls.push(['legacy', options.quality]);
+          return { url: media('legacy'), source: 'app' };
+        },
       },
-      './app-source': { fetchAppPlayUrl: async () => {
-        if (appError) throw Object.assign(new Error('upstream fault'), { code: appError });
-        return { url: media('app'), source: 'app' };
-      } },
     });
-    const auto = { allowPublicFallback: true, force: true };
-    assert.equal((await native.fetchPlayUrlSingle('11', '1', auto)).source, 'app');
-    assert.equal(webCalls, 0);
-    appError = 'EMPTY_RESPONSE';
-    const fallback = await native.fetchPlayUrlSingle('11', '1', auto);
-    assert.equal(fallback.url, media('public-full'));
-    assert.equal(fallback.publicFallback, true);
-    assert.equal((await native.fetchPlayUrlSingle('11', '1')).url, null, 'download cannot use the playback lookup cache');
-    assert.equal((await native.fetchPlayUrlSingle('11', '1', { ...auto, quality: '1080p' })).url, null);
-    appError = 'BUSINESS_REJECTED';
-    assert.equal((await native.fetchPlayUrlSingle('11', '1', auto)).url, null);
-    assert.equal(webCalls, 1, 'fixed quality and explicit rejection never request the fallback');
-    appError = 'EMPTY_RESPONSE';
-    response = { status: 403, data: { main_url: media('denied') } };
-    const denied = await native.fetchPlayUrlSingle('11', '1', auto);
-    assert.equal(denied.url, null);
-    assert.deepEqual(Array.from(denied.sources, item => item.code), ['EMPTY_RESPONSE', 'HTTP_403']);
-    for (const fields of [{ item_id: '12' }, { url_expire: 1 }, { main_url: 'https://127.0.0.1/secret' }]) {
-      response = { status: 200, data: { main_url: media('public-full'), ...fields } };
-      const rejected = await native.fetchPlayUrlSingle('11', '1', auto);
-      assert.equal(rejected.url, null);
-      assert.doesNotMatch(JSON.stringify(rejected), /127\.0\.0\.1|secret/);
+    const options = { force: true, quality: '1080p', allowPublicFallback: true };
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('current'));
+    assert.deepEqual(calls.splice(0), [['current', '1080p']]);
+    currentError = Object.assign(new Error('empty'), { code: 'EMPTY_RESPONSE' });
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('legacy'));
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['legacy', '1080p']]);
+    for (const status of [401, 403, 429]) {
+      currentError = Object.assign(new Error('denied'), { status });
+      const result = await fallback.fetchPlayUrlSingle('11', '1', options);
+      assert.equal(result.url, null);
+      assert.equal(result.sources[0].code, 'HTTP_' + status);
+      assert.deepEqual(calls.splice(0), [['current', '1080p']]);
     }
   }],
   ['registration diagnostics retain safe causes and allow retry without restart', async () => {

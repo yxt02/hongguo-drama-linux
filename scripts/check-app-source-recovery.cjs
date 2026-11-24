@@ -17,6 +17,7 @@ function load(axios, { realDevice = false, getPlaybackDevice, now } = {}) {
     require(name) {
       if (name === 'node:crypto') return crypto;
       if (name === './sm3') return require('../src/native/sm3');
+      if (name === './playback-v5') return require('../src/native/playback-v5');
       if (name === './download-quality') return require('../src/native/download-quality');
       if (name === './playback-device') return getPlaybackDevice ? { getPlaybackDevice } : realDevice ? require('../src/native/playback-device')
         : { getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }) };
@@ -97,6 +98,19 @@ function row(definition, width, height, suffix) {
   const inlineResponse = (rows, id = vid) => ({ status: 200, headers: {}, data: JSON.stringify({ code: 0,
     data: { [id]: { video_model: { video_list: rows, fallback_api: 'https://vod.snssdk.com/must-not-fetch' } } } }) });
   const plain = { ...row('1080p', 1080, 1920, 'inline'), encrypt_info: { encrypt: false } };
+  const current = load(async config => {
+    assert.equal(new URL(config.url).pathname, '/novel/player/multi_video_model/preload/v1');
+    assert.equal(config.headers['Content-Encoding'], 'gzip');
+    assert.equal(config.headers.Cookie, undefined);
+    assert.deepEqual(JSON.parse(require('node:zlib').gunzipSync(config.data)).mixed_video_id_map, { '1004': [vid] });
+    return { status: 200, headers: {}, data: JSON.stringify({ data: { '1004': { [vid]: { video_model: { video_list: [plain] } } } } }) };
+  });
+  const currentResult = await current.fetchCurrentAppPlayUrl(vid);
+  assert.equal(currentResult.sourceProvider, 'app-current');
+  assert.equal(currentResult.url, plain.main_url);
+  assert.equal(currentResult.width, 1080);
+  await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchCurrentAppPlayUrl(vid),
+    error => error.code === 'MISSING_MODEL');
   const identities = [{ device_id: '11', iid: '12', cdid: 'fixture' }, { device_id: '21', iid: '22', cdid: 'fixture' }];
   let recoverCalls = 0, renewals = 0;
   const recovery = load(async config => {

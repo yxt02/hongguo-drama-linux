@@ -36,8 +36,7 @@ function restore(root) {
         || !Number.isFinite(e.size) || e.size <= 0 || fs.statSync(filePath).size !== e.size) throw new Error('Incomplete cache');
       // Old automatic Hongguo files may contain silently selected web/legacy media.
       // Manual originals live elsewhere; only their managed copies may be rebuilt.
-      if (e.source === 'hongguo' && !['app', 'manual'].includes(e.mediaSource)
-        && !(e.quality === 'auto' && e.mediaSource === 'web-public')) throw new Error('Outdated source policy');
+      if (e.source === 'hongguo' && !['app', 'manual'].includes(e.mediaSource)) throw new Error('Outdated source policy');
       entries.push({ ...e, filePath, complete: true, disk: { directory, readers: 0, managed: true } });
     } catch (_) { fs.rmSync(directory, { recursive: true, force: true }); }
   }

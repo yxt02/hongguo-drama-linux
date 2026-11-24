@@ -81,6 +81,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   const [compatError, setCompatError] = useState('');
   const [decodeFailed, setDecodeFailed] = useState(false);    // 当前集解不出画面
   const [playbackError, setPlaybackError] = useState('');
+  const [sourceLookupFailed, setSourceLookupFailed] = useState(false);
   const [playbackVersion, setPlaybackVersion] = useState(0);
   const [compatCache, setCompatCache] = useState({ files: 0, bytes: 0 });
   const [mergeAsk, setMergeAsk] = useState(false);            // 合并格式选择
@@ -190,6 +191,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     setDecodeFailed(false);
     setCompatError('');
     setPlaybackError('');
+    setSourceLookupFailed(false);
     lastSavedRef.current = 0;
   }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch, stopDecodeWatch]);
 
@@ -268,7 +270,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     && intent.selection === selectionVersion.current && intent.media === mediaVersion.current
     && intent.seriesId === selectedSeriesRef.current && intent.vidIndex === stateRef.current.currentIndex, []);
 
-  const recoverOnlineFailure = useCallback(async (ep, message) => {
+  const recoverOnlineFailure = useCallback(async (ep, message, errorCode) => {
     const seekTo = currentPosition();
     const autoplay = loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current;
     resetPlayback(autoplay);
@@ -277,6 +279,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       selection: selectionVersion.current, media: mediaVersion.current, seekTo, autoplay, submitting: true };
     fallbackRef.current = intent;
     setPlaybackError(message);
+    setSourceLookupFailed(errorCode === 'SOURCE_UNAVAILABLE');
     try {
       const data = await loadDetail(intent.seriesId);
       if (!isCurrentFallback(intent)) return;
@@ -513,7 +516,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             setSeriesCompat(true);
             releasePrefetch();
           }
-          if (res.width && res.height) setSourceInfo({ width: res.width, height: res.height, publicFallback: res.publicFallback });
+          if (res.width && res.height) setSourceInfo({ width: res.width, height: res.height });
           setDecodeFailed(false);
           setCompatProgress(null);
           showToast(res.cached ? '已切换为兼容格式播放' : `已转码为兼容格式（用时 ${res.elapsed}s），开始播放`);
@@ -522,10 +525,10 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           });
         } else {
           setCompatProgress(null);
-          if (autoCompat && !res?.cancelled && reconnectOnce()) return;
+          if (autoCompat && !res?.cancelled && res?.errorCode !== 'SOURCE_UNAVAILABLE' && reconnectOnce()) return;
           const message = (res && res.error) || '转码失败';
           if (!res?.cancelled && onlineSourceRef.current === `${activeSeriesId}:${vidIndex}`) {
-            await recoverOnlineFailure(ep, message);
+            await recoverOnlineFailure(ep, message, res?.errorCode);
             return;
           }
           setDecodeFailed(true);
@@ -671,12 +674,12 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           return;
         }
         if (!res || !res.success) {
-          await recoverOnlineFailure(ep, (res && res.error) || '在线播放准备失败');
+          await recoverOnlineFailure(ep, (res && res.error) || '在线播放准备失败', res?.errorCode);
           return;
         }
         request.streamId = res.streamId;
         request.prepared = true;
-        setSourceInfo(res.width && res.height ? { width: res.width, height: res.height, publicFallback: res.publicFallback } : null);
+        setSourceInfo(res.width && res.height ? { width: res.width, height: res.height } : null);
         mediaCodecRef.current = String(res.codec || '');
         // 本机明确解不了 HEVC 时直接转兼容格式，避免先播一段黑屏有声再手工切换。
         if (autoCompat && shouldTranscodeFirst(res.codec, probeHevcSupport(
@@ -1230,7 +1233,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             setSeriesCompat(true); releasePrefetch();
             showToast('本剧已使用 H.264 兼容解码');
           }}>本剧：自动解码 · 使用 H.264</button>}
-          {sourceInfo && <span className="player-stat">{sourceInfo.publicFallback ? '官网备用片源' : '片源'} {sourceInfo.width} × {sourceInfo.height}</span>}
+          {sourceInfo && <span className="player-stat">片源 {sourceInfo.width} × {sourceInfo.height}</span>}
           <button
             aria-pressed={autoNext}
             className={`btn btn-outline ${autoNext ? 'btn-autonext-on' : ''}`}
@@ -1522,9 +1525,9 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {downloadQuality !== 'auto' && <button className="btn btn-outline" disabled={qualityLoading}
-                  onClick={() => changeQuality('auto')}>改用自动画质播放</button>}
-                {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
-                {fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
+                  onClick={() => changeQuality('auto')}>改用 App 最高可用画质</button>}
+                {!sourceLookupFailed && current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
+                {!sourceLookupFailed && fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div></>
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>

@@ -13,16 +13,25 @@ const { createRequire } = require('node:module');
 const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), req = createRequire(file);
 
 (async () => {
-  const publicFallback = process.env.HONGGUO_LIVE_PUBLIC === '1';
-  const cases = process.env.HONGGUO_LIVE_CASES ? JSON.parse(process.env.HONGGUO_LIVE_CASES) : [
+  const lateEpisodes = process.env.HONGGUO_LIVE_LATE === '1';
+  const provider = req('./src/native/hongguo');
+  let cases = process.env.HONGGUO_LIVE_CASES ? JSON.parse(process.env.HONGGUO_LIVE_CASES) : [
     { seriesId: '7516411117833292825', vid: '7516512118569454654', vidIndex: 4,
-      quality: publicFallback ? 'auto' : '1080p', source: publicFallback ? 'web-public' : 'app' },
+      quality: '1080p', source: 'app' },
   ];
-  if (publicFallback) {
-    // Simulate the upstream App outage. All website metadata and media requests stay real.
-    req('./src/native/app-source').fetchAppPlayUrl = async () => {
-      throw Object.assign(new Error('Synthetic App outage'), { code: 'EMPTY_RESPONSE' });
-    };
+  if (lateEpisodes && !process.env.HONGGUO_LIVE_CASES) {
+    const series = [
+      { seriesId: '7690112243203050521', count: 2, quality: 'auto' }, // Upstream's Linux 8.2 fixture.
+      { seriesId: '7516411117833292825', count: 1, quality: '1080p' },
+    ];
+    const samples = await Promise.all(series.map(async ({ seriesId, count, quality }) => {
+      const catalog = await provider.fetchEpisodeListFromWeb(seriesId, Date.now() + 12000);
+      const rows = catalog.episodes.filter(ep => !ep.locked && ep.web_available === false && ep.vid_index >= 6);
+      assert.ok(rows.length >= count, `Series ${seriesId} has too few episodes outside the website preview range`);
+      const selected = [rows[0], rows[Math.min(6, rows.length - 1)]].slice(0, count);
+      return selected.map(ep => ({ seriesId, vid: ep.vid, vidIndex: ep.vid_index, quality, source: 'app' }));
+    }));
+    cases = samples.flat();
   }
   const compat = process.env.HONGGUO_LIVE_COMPAT === '1';
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hongguo-live-main-'));
@@ -46,43 +55,35 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
     context.registerLocalProtocol(); context.registerStreamProtocol();
     for (const [index, selected] of cases.entries()) {
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
-      const source = await req('./src/native/hongguo').fetchPlayUrlSingle(selected.vid, selected.seriesId,
-        { quality, force: true, allowPublicFallback: publicFallback });
+      const sample = { series: selected.seriesId, episode: selected.vidIndex, requestedQuality: quality };
+      const source = await provider.fetchPlayUrlSingle(selected.vid, selected.seriesId,
+        { quality, force: true });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
-        source: source.source || 'app', width: source.width, height: source.height, codec: source.codec,
+        ...sample, source: source.source || 'app', route: source.sourceProvider, width: source.width, height: source.height, codec: source.codec,
         failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
       assert.ok(source.url, source.error || 'source-health failed');
+      if (lateEpisodes) {
+        assert.equal(source.sourceProvider, 'app-current');
+        assert.ok(Math.min(source.width, source.height) >= 720, 'Expected an App HD source for the later episode');
+      }
       const result = await handlers['prepare-online-play']({}, { ...selected, quality, disk: true, requestId });
       assert.ok(result.success, result.error);
       context.liveVid = selected.vid; context.liveQuality = quality;
       const entry = vm.runInContext('onlineCache.get(playbackCache.cacheKey(liveVid, liveQuality))', context);
       assert.equal(entry.mediaSource, selected.source || 'app');
-      assert.equal(result.publicFallback, publicFallback);
       assert.ok(entry.width > 0 && entry.height > 0);
+      if (lateEpisodes) assert.ok(Math.min(entry.width, entry.height) >= 720);
       if (quality !== 'auto') assert.ok(Math.min(entry.width, entry.height) >= parseInt(quality, 10));
       await decode(entry.filePath);
       const range = await protocols[new URL(result.url).protocol.slice(0, -1)](new Request(result.url, { headers: { Range: 'bytes=0-1023' } }));
       assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 1024);
-      console.log(JSON.stringify({ passed: true, stage: 'prepared-media', source: entry.mediaSource,
+      console.log(JSON.stringify({ passed: true, stage: 'prepared-media', ...sample, source: entry.mediaSource,
         width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3 }));
-      if (publicFallback) {
-        const probe = JSON.parse((await exec(ffprobe, ['-v', 'error', '-show_entries', 'format=duration',
-          '-of', 'json', entry.filePath], { timeout: 10000 })).stdout);
-        assert.ok(Number(probe.format.duration) > 11);
-        console.log(JSON.stringify({ passed: true, stage: 'public-full-episode', duration: Number(probe.format.duration) }));
-        // The default H.264 player enters through the compatibility IPC, before normal preparation.
-        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality, requestId: `live-public-compat-${index}` });
-        assert.ok(converted.success, converted.error);
-        assert.equal(converted.publicFallback, true);
-        assert.equal(converted.codec, 'h264');
-        const output = vm.runInContext(`mediaAccess.resolveLocal(${JSON.stringify(converted.url)})`, context);
-        await decode(output);
-        await handlers['release-online-play']({}, { streamId: result.streamId });
-        continue;
-      }
-      if (compat) {
-        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality,
-          filePath: entry.filePath, requestId: `live-compat-${index}` });
+      await handlers['release-online-play']({}, { streamId: result.streamId });
+      context.clearOnlineCache();
+      if (compat && (!lateEpisodes || index === 0)) {
+        // Start from the same online entry point as a viewer with H.264 enabled.
+        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality, requestId: `live-compat-${index}` });
         assert.ok(converted.success, converted.error);
         const output = vm.runInContext(`mediaAccess.resolveLocal(${JSON.stringify(converted.url)})`, context);
         const probe = JSON.parse((await exec(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
@@ -91,7 +92,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
         await decode(output);
         const playback = await protocols['hongguo-local'](new Request(converted.url, { headers: { Range: 'bytes=0-1023' } }));
         assert.equal(playback.status, 206); assert.equal((await playback.arrayBuffer()).byteLength, 1024);
-        console.log(JSON.stringify({ passed: true, stage: 'h264-playback', source: entry.mediaSource,
+        console.log(JSON.stringify({ passed: true, stage: 'h264-playback', ...sample, source: entry.mediaSource,
           width: probe.width, height: probe.height, codec: probe.codec_name, decodedSeconds: 3, range: 206 }));
       }
       const output = path.join(temp, `manual-${index}.mp4`);
@@ -102,8 +103,9 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await context.executeHongguoDownload(context.liveTask);
       assert.equal(context.liveTask.status, 'completed', context.liveTask.error);
       await decode(output);
-      console.log(JSON.stringify({ passed: true, stage: 'manual-download', source: entry.mediaSource, bytes: fs.statSync(output).size }));
-      await handlers['release-online-play']({}, { streamId: result.streamId });
+      if (lateEpisodes) assert.ok(parseInt(context.liveTask.actualQuality, 10) >= 720);
+      console.log(JSON.stringify({ passed: true, stage: 'manual-download', ...sample,
+        quality: context.liveTask.actualQuality, bytes: fs.statSync(output).size }));
     }
   } finally {
     context.clearOnlineCache?.();

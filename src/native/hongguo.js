@@ -10,11 +10,10 @@ const API = "https://api5-normal-sinfonlineb.fqnovel.com";
 const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
-// App 高清优先。自动在线播放可使用官网播放器提供的完整公开分集。
+// 官网用于目录、分享和分集身份。播放和下载只使用 App 片源。
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
-const PUBLIC_PLAY_URL = SITE_ORIGIN + "/api/video/protected/fallback-play-info";
 let trustedOfficialDnsAllowed = false;
 function configureNetwork({ allowTrustedDns = false } = {}) {
   trustedOfficialDnsAllowed = allowTrustedDns === true;
@@ -191,37 +190,6 @@ function normalizeVideoUrl(raw) {
     .replace(/&amp;/g, '&')
     .replace(/([?&])Range=[^&]*/gi, '$1')
     .replace(/[?&]$/, '');
-}
-
-// Same anonymous request as the public website player (upstream issue #179).
-// The SEO player page can expose a 10-second preview and is not used here.
-async function fetchPublicPlayback(vid) {
-  if (!/^\d{1,30}$/.test(String(vid))) return null;
-  const response = await axios({
-    ...webMediaRequestOptions(PUBLIC_PLAY_URL, { trustedOfficialDns: trustedOfficialDnsAllowed }),
-    url: PUBLIC_PLAY_URL,
-    method: 'POST',
-    headers: { 'User-Agent': WEB_UA, Accept: 'application/json', 'Content-Type': 'application/json', Referer: WEB_REFERER },
-    data: { item_id: String(vid) },
-    timeout: 6000,
-    maxRedirects: 0,
-    maxContentLength: 64 * 1024,
-    responseType: 'json',
-    validateStatus: () => true,
-  });
-  const data = response.data;
-  if (response.status !== 200) throw Object.assign(new Error('官网播放请求失败'), { status: response.status });
-  if (!data || typeof data !== 'object' || Number(data.base_resp?.StatusCode ?? data.code ?? 0) !== 0
-      || (data.item_id != null && String(data.item_id) !== String(vid))) return null;
-  const expires = Number(data.url_expire);
-  if (expires > 0 && expires * 1000 <= Date.now() + 5000) return null;
-  let url;
-  try { url = new URL(normalizeVideoUrl(data.main_url)); } catch (_) { return null; }
-  if (url.protocol !== 'https:' || (url.port && url.port !== '443') || !isPublicMediaUrl(url.href)
-      || !/(^|\.)(?:qznovelvod|fqnovelvod|douyinvod)\.com$/i.test(url.hostname)) {
-    throw Object.assign(new Error('官网返回了不受支持的片源地址'), { code: 'SECURITY_BLOCKED' });
-  }
-  return { url: url.href, source: 'web', publicFallback: true, vid: String(vid), userAgent: WEB_UA, referer: WEB_REFERER };
 }
 
 /** 拉取官网页面 HTML */
@@ -659,25 +627,21 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('custom:') || String(sid).startsWith('custom:')) return require('./custom-source').fetchPlayUrlSingle(vid, sid, options);
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
-    const allowPublicFallback = options.allowPublicFallback === true && quality === 'auto';
-    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}${allowPublicFallback ? ':public' : ''}`;
+    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
     return await cachedRequest(cacheKey, 30000, async () => {
       try {
-        return await require('./app-source').fetchAppPlayUrl(String(vid), { quality, preferQuality: true });
-      } catch (error) {
-        const appFailure = sourceFailure('app', error);
-        const failures = [appFailure];
-        if (allowPublicFallback && ['EMPTY_RESPONSE', 'NETWORK_ERROR', 'TIMEOUT', 'MISSING_MODEL', 'NO_PLAYABLE_SOURCE']
-          .includes(appFailure.code)) {
+        const app = require('./app-source');
+        const request = { quality, preferQuality: true };
+        if (app.fetchCurrentAppPlayUrl) {
           try {
-            const web = await fetchPublicPlayback(vid);
-            if (web) return web;
-            failures.push(sourceFailure('web'));
-          } catch (webError) {
-            failures.push(sourceFailure('web', webError));
+            return await app.fetchCurrentAppPlayUrl(String(vid), request);
+          } catch (error) {
+            if (!['EMPTY_RESPONSE', 'MISSING_MODEL', 'INVALID_RESPONSE'].includes(error.code)) throw error;
           }
         }
-        throw unavailableSources(failures, quality);
+        return await app.fetchAppPlayUrl(String(vid), request);
+      } catch (error) {
+        throw unavailableSources([sourceFailure('app', error)], quality);
       }
     }, options);
   } catch (error) {
@@ -703,7 +667,7 @@ function sourceFailure(source, error) {
   if (code === 'SECURITY_BLOCKED' || code.startsWith('ERR_WEB_MEDIA_')) return { source, code: 'SECURITY_BLOCKED', message: '片源地址被安全校验阻止' };
   if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
-  if (code === 'EMPTY_RESPONSE') return { source, code, message: '播放接口返回空响应，已尝试恢复会话，请稍后重试' };
+  if (code === 'EMPTY_RESPONSE') return { source, code, message: '接口返回空响应（HTTP 200）' };
   if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
@@ -720,7 +684,7 @@ function sourceFailure(source, error) {
 }
 
 function unavailableSources(sources, quality = 'auto') {
-  const names = { web: '网页', app: 'App', api: '旧接口' };
+  const names = { web: '官网', app: 'App', api: '旧接口' };
   const error = new Error(`本集取源失败${quality === 'auto' ? '' : `（所选清晰度 ${quality}，未降级）`}：${sources.map(item => `${names[item.source]}：${item.message}`).join('；')}。请重试或在官方 App 确认可播情况。`);
   error.code = 'SOURCE_UNAVAILABLE';
   error.sources = sources;

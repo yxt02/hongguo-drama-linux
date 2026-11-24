@@ -52,17 +52,19 @@ const text = node => typeof node === 'string' || typeof node === 'number' ? Stri
   for (const mode of ['auto', undefined]) {
     const reason = '本集片源尺寸不满足所选清晰度（最高可用兼容片源 640×360）';
     const quality = mount({ props: { target: { seriesId: 'A', vidIndex: 1 } }, settings: { playback_decode_mode: mode, playback_quality: '1080p' },
-      prepare: async () => ({ success: false, error: reason }),
+      prepare: async () => ({ success: false, error: reason, errorCode: 'SOURCE_UNAVAILABLE' }),
       transcode: async p => p.quality === 'auto'
         ? { success: true, url: 'file:///available-h264.mp4', width: 640, height: 360 }
-        : { success: false, error: reason },
+        : { success: false, error: reason, errorCode: 'SOURCE_UNAVAILABLE' },
     });
     await quality.flush(); await quality.flush();
     const alert = quality.find(n => n.props.role === 'alert');
     assert.equal(text(alert), reason, 'source failure must not gain an invented cache failure');
+    assert.equal(quality.find(n => n.type === 'button' && /转码后播放|重新连接片源/.test(text(n))), undefined);
+    assert.equal(quality.prepares.length + quality.transcodes.length, 1, 'a source error must not restart playback through the decoder');
     assert.ok([...quality.prepares, ...quality.transcodes].every(p => p.quality === '1080p'), 'never silently downgrade');
     if (mode === undefined) {
-      await quality.button('改用自动画质播放').props.onClick(); await quality.flush();
+      await quality.button('改用 App 最高可用画质').props.onClick(); await quality.flush();
       assert.equal(quality.transcodes.at(-1).quality, 'auto');
       assert.equal(quality.find(n => n.type === 'video').props.src, 'file:///available-h264.mp4');
       assert.equal(quality.settingsSaved.at(-1).playback_quality, 'auto');
