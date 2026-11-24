@@ -6,13 +6,16 @@
 // bounded HTTPS transport; exact episode matching; supported codec selection.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
+const { gzipSync } = require('node:zlib');
 const { getPlaybackDevice } = require('./playback-device');
+const { signPlaybackV5 } = require('./playback-v5');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
+const PRELOAD_API = 'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
@@ -150,6 +153,32 @@ function playbackRequest(payload, identity, host = new URL(VIDEO_API).hostname) 
         'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, device), 'x-tt-dt': '',
         'x-tt-store-region': 'cn', 'x-tt-store-region-src': 'did',
     } };
+}
+
+function preloadRequest(identity, videoId) {
+    // Current-app profile from N3urda/hongguoTV ef328f3a: V5 preload + device_level=2.
+    const payload = JSON.stringify({
+        biz_param: { detail_page_version: 0, device_level: 2, disable_digg_stat: false,
+            disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false,
+            use_os_player: false, use_server_dns: false, video_platform: 1024 },
+        mixed_video_id_map: { '1004': [String(videoId)] },
+        dr_scene: 'preload',
+    });
+    const body = gzipSync(Buffer.from(payload));
+    const signed = signPlaybackV5({
+        base: PRELOAD_API,
+        values: {
+            aid: '8662', app_name: 'novelread', version_code: '74532', version_name: '7.4.5.32',
+            update_version_code: '74532', manifest_version_code: '74532', os: 'android', ssmix: 'a',
+            channel: 'update_64', device_platform: 'android', device_type: '25053RT47C',
+            device_brand: 'Redmi', os_version: '16', os_api: '36', ac: 'wifi', language: 'zh',
+            host_abi: 'arm64-v8a', iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id,
+        },
+        body, now: Date.now(), field21: 312,
+    });
+    return { ...signed, body, method: 'POST', headers: { ...signed.headers,
+        'User-Agent': 'okhttp/4.12.0', Accept: 'application/json',
+        'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip' } };
 }
 
 function parseSearchInteger(value) {
@@ -314,7 +343,7 @@ async function requestJson(url, options, deadline, signal) {
 }
 
 async function fetchAppPlayUrl(vid, options = {}) {
-    const requestedQuality = normalizeDownloadQuality(options.quality);
+    normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
     const payload = JSON.stringify({
@@ -344,22 +373,75 @@ async function fetchAppPlayUrl(vid, options = {}) {
         }
     }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
-    const entry = response.data?.[vid];
+    return resolvePlaybackModel(response.data?.[vid], vid, options, deadline, signal);
+}
+
+async function fetchCurrentAppPlayUrl(vid, options = {}) {
+    normalizeDownloadQuality(options.quality);
+    vid = String(vid || '');
+    if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
+    const identity = await getPlaybackDevice(requestJson);
+    const deadline = Date.now() + 8000;
+    const signal = AbortSignal.timeout(8000);
+    const signed = preloadRequest(identity, vid);
+    const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
+    if (Number(response.code ?? response.Code ?? 0) !== 0) {
+        throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
+    }
+    const entries = response.data?.['1004'] ?? response.data?.video_model_data ?? response.data;
+    return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true }, deadline, signal);
+}
+
+async function resolvePlaybackModel(entry, vid, options, deadline, signal) {
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
-    if (!model) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+        throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
+    }
     const inline = model.video_list && typeof model.video_list === 'object' && Object.keys(model.video_list).length > 0;
-    let info = model;
-    if (!inline) {
+    const readFallback = async (codec) => {
         const fallback = parseFallback(model.fallback_api);
         if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
+        const url = new URL(checkedUrl(fallback, ['fqnovel.com', 'snssdk.com']));
+        if (codec === 'h264') {
+            url.searchParams.set('codec_type', '0');
+            url.searchParams.set('force_codec', 'h264');
+        } else if (codec === 'hevc') url.searchParams.set('codec_type', '1');
+        const outer = await requestJson(url.href, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
         if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
             throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
         }
-        info = outer?.video_info?.data;
+        const info = outer?.video_info?.data;
+        if (options.current && model.video_id && (info?.video_id !== model.video_id ||
+            (Number(model.video_duration) > 0 && !(Math.abs(Number(info?.video_duration) - Number(model.video_duration)) <= 0.5)))) {
+            throw Object.assign(new Error('App 备用片源与当前分集不匹配'), { code: 'INVALID_RESPONSE' });
+        }
+        return info;
+    };
+    if (!inline) return parsePlaybackStreams(await readFallback(), vid, options, false);
+    try {
+        return parsePlaybackStreams(model, vid, options, true);
+    } catch (error) {
+        if (!options.current || !model.fallback_api || typeof model.video_id !== 'string' || !model.video_id
+            || !(Number(model.video_duration) > 0)) throw error;
+        if (error.missingEncryptionMetadata) {
+            const info = await readFallback();
+            return parsePlaybackStreams(info, vid, options, false, true);
+        }
+        if (!['UNSUPPORTED_CODEC', 'QUALITY_UNAVAILABLE'].includes(error.code)) throw error;
+        for (const codec of ['hevc', 'h264']) {
+            try { return parsePlaybackStreams(await readFallback(codec), vid, options, false, true); }
+            catch (failure) {
+                if (failure.status || !['UNSUPPORTED_CODEC', 'QUALITY_UNAVAILABLE', 'NO_PLAYABLE_SOURCE', 'RESOLUTION_UNKNOWN'].includes(failure.code)) throw failure;
+            }
+        }
+        throw error;
     }
+}
+
+function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetadata = inline) {
+    const requestedQuality = normalizeDownloadQuality(options.quality);
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
-    const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
+    const streams = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || item.backup_url_1 || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
         const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'h265_hvc1', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
         const quality = str(item.quality_desc || item.definition || item.height || item.vheight || item.video_meta?.definition);
@@ -384,7 +466,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
             ? { code: 'QUALITY_UNAVAILABLE', width: measured[0].width, height: measured[0].height }
             : { code: 'RESOLUTION_UNKNOWN' });
     }
-    let lastError;
+    let lastError, missingEncryptionMetadata = false;
     const variants = [];
     const seen = new Set();
     // Keep the highest resolution in auto mode; alternate CDNs/codecs may not lower it.
@@ -397,11 +479,14 @@ async function fetchAppPlayUrl(vid, options = {}) {
     for (const selected of selectedRows) {
         try {
             const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
-            if (inline && !spade && ![false, 0, '0', 'false'].includes(selected.item.encrypt_info?.encrypt)) {
+            const encrypted = selected.item.encrypt_info?.encrypt ?? selected.item.encrypt;
+            if (requireEncryptionMetadata && !spade && ![false, 0, '0', 'false'].includes(encrypted)) {
+                if (encrypted == null) missingEncryptionMetadata = true;
                 throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
             }
             const key = spade ? deriveContentKey(spade) : null;
-            for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
+            for (const candidate of [selected.item.main_url, selected.item.backup_url, selected.item.backup_url_1,
+                ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
                 if (typeof candidate !== 'string' || !candidate) continue;
                 try {
                     const media = info.key_seed
@@ -414,7 +499,9 @@ async function fetchAppPlayUrl(vid, options = {}) {
                     seen.add(identity);
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         // App video CDN rejects browser Referer headers (HTTP 403).
-                        userAgent: inline ? PLAYBACK_UA : VIDEO_UA, omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
+                        userAgent: options.current ? 'okhttp/4.12.0' : inline ? PLAYBACK_UA : VIDEO_UA,
+                        sourceProvider: options.current ? 'app-current' : 'app-legacy',
+                        omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         width: selected.width, height: selected.height });
                 } catch (error) { lastError = error; }
             }
@@ -422,7 +509,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
     }
     if (variants.length) return { ...variants[0], variants };
     throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
-        : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });
+        : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE', missingEncryptionMetadata });
 }
 
-module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };
+module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };

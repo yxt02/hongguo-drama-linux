@@ -69,6 +69,8 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       if (name === './playback-device') return { getPlaybackDevice: async () => playbackDevice };
       if (name === './sm3') return require(path.join(nativeDir, 'sm3'));
       if (name === './download-quality') return require(path.join(nativeDir, 'download-quality'));
+      if (name === './playback-v5') return require(path.join(nativeDir, 'playback-v5'));
+      if (name === 'node:zlib') return require(name);
       if (name === 'node:crypto') return { ...crypto, createHash(name, ...args) {
         assert.notEqual(name.toLowerCase(), 'sm3', 'must not depend on OpenSSL SM3');
         return crypto.createHash(name, ...args);

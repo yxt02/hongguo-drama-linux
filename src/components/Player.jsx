@@ -513,7 +513,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             setSeriesCompat(true);
             releasePrefetch();
           }
-          if (res.width && res.height) setSourceInfo({ width: res.width, height: res.height, publicFallback: res.publicFallback });
+          if (res.width && res.height) setSourceInfo({ width: res.width, height: res.height });
           setDecodeFailed(false);
           setCompatProgress(null);
           showToast(res.cached ? '已切换为兼容格式播放' : `已转码为兼容格式（用时 ${res.elapsed}s），开始播放`);
@@ -676,7 +676,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         }
         request.streamId = res.streamId;
         request.prepared = true;
-        setSourceInfo(res.width && res.height ? { width: res.width, height: res.height, publicFallback: res.publicFallback } : null);
+        setSourceInfo(res.width && res.height ? { width: res.width, height: res.height } : null);
         mediaCodecRef.current = String(res.codec || '');
         // 本机明确解不了 HEVC 时直接转兼容格式，避免先播一段黑屏有声再手工切换。
         if (autoCompat && shouldTranscodeFirst(res.codec, probeHevcSupport(
@@ -1230,7 +1230,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             setSeriesCompat(true); releasePrefetch();
             showToast('本剧已使用 H.264 兼容解码');
           }}>本剧：自动解码 · 使用 H.264</button>}
-          {sourceInfo && <span className="player-stat">{sourceInfo.publicFallback ? '官网备用片源' : '片源'} {sourceInfo.width} × {sourceInfo.height}</span>}
+          {sourceInfo && <span className="player-stat">片源 {sourceInfo.width} × {sourceInfo.height}</span>}
           <button
             aria-pressed={autoNext}
             className={`btn btn-outline ${autoNext ? 'btn-autonext-on' : ''}`}
@@ -1522,7 +1522,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {downloadQuality !== 'auto' && <button className="btn btn-outline" disabled={qualityLoading}
-                  onClick={() => changeQuality('auto')}>改用自动画质播放</button>}
+                  onClick={() => changeQuality('auto')}>改用 App 最高可用画质</button>}
                 {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
                 {fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div></>

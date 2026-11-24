@@ -62,7 +62,7 @@ const text = node => typeof node === 'string' || typeof node === 'number' ? Stri
     assert.equal(text(alert), reason, 'source failure must not gain an invented cache failure');
     assert.ok([...quality.prepares, ...quality.transcodes].every(p => p.quality === '1080p'), 'never silently downgrade');
     if (mode === undefined) {
-      await quality.button('改用自动画质播放').props.onClick(); await quality.flush();
+      await quality.button('改用 App 最高可用画质').props.onClick(); await quality.flush();
       assert.equal(quality.transcodes.at(-1).quality, 'auto');
       assert.equal(quality.find(n => n.type === 'video').props.src, 'file:///available-h264.mp4');
       assert.equal(quality.settingsSaved.at(-1).playback_quality, 'auto');
