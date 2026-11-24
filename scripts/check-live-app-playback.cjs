@@ -20,12 +20,18 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       quality: '1080p', source: 'app' },
   ];
   if (lateEpisodes && !process.env.HONGGUO_LIVE_CASES) {
-    const seriesId = '7690112243203050521'; // Public fixture used in upstream's Linux 8.2 validation.
-    const catalog = await provider.fetchEpisodeListFromWeb(seriesId, Date.now() + 12000);
-    const rows = catalog.episodes.filter(ep => !ep.locked && ep.web_available === false && ep.vid_index >= 6);
-    assert.ok(rows.length >= 2, 'Expected at least two later episodes outside the website preview range');
-    cases = [rows[0], rows[Math.min(6, rows.length - 1)]].map(ep =>
-      ({ seriesId, vid: ep.vid, vidIndex: ep.vid_index, quality: 'auto', source: 'app' }));
+    const series = [
+      { seriesId: '7690112243203050521', count: 2, quality: 'auto' }, // Upstream's Linux 8.2 fixture.
+      { seriesId: '7516411117833292825', count: 1, quality: '1080p' },
+    ];
+    const samples = await Promise.all(series.map(async ({ seriesId, count, quality }) => {
+      const catalog = await provider.fetchEpisodeListFromWeb(seriesId, Date.now() + 12000);
+      const rows = catalog.episodes.filter(ep => !ep.locked && ep.web_available === false && ep.vid_index >= 6);
+      assert.ok(rows.length >= count, `Series ${seriesId} has too few episodes outside the website preview range`);
+      const selected = [rows[0], rows[Math.min(6, rows.length - 1)]].slice(0, count);
+      return selected.map(ep => ({ seriesId, vid: ep.vid, vidIndex: ep.vid_index, quality, source: 'app' }));
+    }));
+    cases = samples.flat();
   }
   const compat = process.env.HONGGUO_LIVE_COMPAT === '1';
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hongguo-live-main-'));
@@ -49,10 +55,11 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
     context.registerLocalProtocol(); context.registerStreamProtocol();
     for (const [index, selected] of cases.entries()) {
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
+      const sample = { series: selected.seriesId, episode: selected.vidIndex, requestedQuality: quality };
       const source = await provider.fetchPlayUrlSingle(selected.vid, selected.seriesId,
         { quality, force: true });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
-        episode: selected.vidIndex, source: source.source || 'app', route: source.sourceProvider, width: source.width, height: source.height, codec: source.codec,
+        ...sample, source: source.source || 'app', route: source.sourceProvider, width: source.width, height: source.height, codec: source.codec,
         failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
       assert.ok(source.url, source.error || 'source-health failed');
       if (lateEpisodes) {
@@ -70,7 +77,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await decode(entry.filePath);
       const range = await protocols[new URL(result.url).protocol.slice(0, -1)](new Request(result.url, { headers: { Range: 'bytes=0-1023' } }));
       assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 1024);
-      console.log(JSON.stringify({ passed: true, stage: 'prepared-media', source: entry.mediaSource,
+      console.log(JSON.stringify({ passed: true, stage: 'prepared-media', ...sample, source: entry.mediaSource,
         width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3 }));
       await handlers['release-online-play']({}, { streamId: result.streamId });
       context.clearOnlineCache();
@@ -85,7 +92,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
         await decode(output);
         const playback = await protocols['hongguo-local'](new Request(converted.url, { headers: { Range: 'bytes=0-1023' } }));
         assert.equal(playback.status, 206); assert.equal((await playback.arrayBuffer()).byteLength, 1024);
-        console.log(JSON.stringify({ passed: true, stage: 'h264-playback', source: entry.mediaSource,
+        console.log(JSON.stringify({ passed: true, stage: 'h264-playback', ...sample, source: entry.mediaSource,
           width: probe.width, height: probe.height, codec: probe.codec_name, decodedSeconds: 3, range: 206 }));
       }
       const output = path.join(temp, `manual-${index}.mp4`);
@@ -96,7 +103,8 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await context.executeHongguoDownload(context.liveTask);
       assert.equal(context.liveTask.status, 'completed', context.liveTask.error);
       await decode(output);
-      console.log(JSON.stringify({ passed: true, stage: 'manual-download', episode: selected.vidIndex,
+      if (lateEpisodes) assert.ok(parseInt(context.liveTask.actualQuality, 10) >= 720);
+      console.log(JSON.stringify({ passed: true, stage: 'manual-download', ...sample,
         quality: context.liveTask.actualQuality, bytes: fs.statSync(output).size }));
     }
   } finally {
