@@ -32,7 +32,8 @@ jobs:
       - name: Live App playback and download after episode five
         env:
           HONGGUO_LIVE_LATE: '1'
-        run: timeout 240 node scripts/check-live-app-playback.cjs
+          HONGGUO_LIVE_COMPAT: '1'
+        run: timeout 420 node scripts/check-live-app-playback.cjs
       - name: Package and verify the proposed update
         env:
           HONGGUO_ELECTRON_DIST: ${{ github.workspace }}/node_modules/electron/dist

@@ -46,6 +46,37 @@ function routeFixture() {
   return { ...native, state };
 }
 const checks = [
+  ['current App source wins, legacy is bounded, and an explicit denial ends the lookup', async () => {
+    const calls = [];
+    let currentError;
+    const fallback = load('hongguo.js', {
+      axios: { get: () => assert.fail('Web must not be queried for media'), post: () => assert.fail('Web must not be queried for media') },
+      './app-source': {
+        async fetchCurrentAppPlayUrl(vid, options) {
+          calls.push(['current', options.quality]);
+          if (currentError) throw currentError;
+          return { url: media('current'), source: 'app' };
+        },
+        async fetchAppPlayUrl(vid, options) {
+          calls.push(['legacy', options.quality]);
+          return { url: media('legacy'), source: 'app' };
+        },
+      },
+    });
+    const options = { force: true, quality: '1080p', allowPublicFallback: true };
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('current'));
+    assert.deepEqual(calls.splice(0), [['current', '1080p']]);
+    currentError = Object.assign(new Error('empty'), { code: 'EMPTY_RESPONSE' });
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('legacy'));
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['legacy', '1080p']]);
+    for (const status of [401, 403, 429]) {
+      currentError = Object.assign(new Error('denied'), { status });
+      const result = await fallback.fetchPlayUrlSingle('11', '1', options);
+      assert.equal(result.url, null);
+      assert.equal(result.sources[0].code, 'HTTP_' + status);
+      assert.deepEqual(calls.splice(0), [['current', '1080p']]);
+    }
+  }],
   ['registration diagnostics retain safe causes and allow retry without restart', async () => {
     for (const [reason, expected, detail] of [
       ['NETWORK_ERROR', 'NETWORK_ERROR', /网络连接失败/],

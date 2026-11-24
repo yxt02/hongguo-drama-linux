@@ -72,9 +72,11 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 1024);
       console.log(JSON.stringify({ passed: true, stage: 'prepared-media', source: entry.mediaSource,
         width: entry.width, height: entry.height, codec: entry.codec, bytes: entry.size, range: 206, decodedSeconds: 3 }));
-      if (compat) {
-        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality,
-          filePath: entry.filePath, requestId: `live-compat-${index}` });
+      await handlers['release-online-play']({}, { streamId: result.streamId });
+      context.clearOnlineCache();
+      if (compat && (!lateEpisodes || index === 0)) {
+        // Start from the same online entry point as a viewer with H.264 enabled.
+        const converted = await handlers['transcode-for-playback']({}, { ...selected, quality, requestId: `live-compat-${index}` });
         assert.ok(converted.success, converted.error);
         const output = vm.runInContext(`mediaAccess.resolveLocal(${JSON.stringify(converted.url)})`, context);
         const probe = JSON.parse((await exec(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
@@ -94,8 +96,8 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       await context.executeHongguoDownload(context.liveTask);
       assert.equal(context.liveTask.status, 'completed', context.liveTask.error);
       await decode(output);
-      console.log(JSON.stringify({ passed: true, stage: 'manual-download', source: entry.mediaSource, bytes: fs.statSync(output).size }));
-      await handlers['release-online-play']({}, { streamId: result.streamId });
+      console.log(JSON.stringify({ passed: true, stage: 'manual-download', episode: selected.vidIndex,
+        quality: context.liveTask.actualQuality, bytes: fs.statSync(output).size }));
     }
   } finally {
     context.clearOnlineCache?.();

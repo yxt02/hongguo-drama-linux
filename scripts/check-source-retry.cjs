@@ -164,6 +164,14 @@ const checks = [
       assert.equal(h.live().length, 0);
     }
   }],
+  ['an empty App response does not start another round of source requests', async () => {
+    const h = fixture();
+    h.state.result = unavailable([{ source: 'app', code: 'EMPTY_RESPONSE' }]);
+    await h.download();
+    assert.equal(h.task().status, 'failed');
+    assert.equal(h.state.calls, 1);
+    assert.equal(h.live().length, 0);
+  }],
   ['temporary App-only failures retry later without losing selected quality', async () => {
     for (const quality of ['720p', '1080p']) for (const code of ['TIMEOUT', 'NETWORK_ERROR', 'HTTP_408', 'HTTP_503']) {
       const h = fixture();

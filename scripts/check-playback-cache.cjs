@@ -78,7 +78,7 @@ if (require.main === module) (async () => {
     await release(restarted, next); restarted.context.clearOnlineCache();
   });
   await check('upgrade discards old web and unknown Hongguo automatic caches, retains App and manual files', async () => {
-    for (const origin of ['web', 'api', undefined, 'app', 'manual']) {
+    for (const origin of ['web', 'web-public', 'api', undefined, 'app', 'manual']) {
       const h = load(); window(h, 10); const first = await prepare(h, 10); await release(h, first);
       const entry = h.run("onlineCache.get('disk:auto:v10')");
       entry.mediaSource = origin; policy.save(entry);
@@ -89,6 +89,14 @@ if (require.main === module) (async () => {
       assert.equal(fs.existsSync(entry.filePath), keep); assert.equal(fs.readFileSync(manual, 'utf8'), 'original');
       await release(restarted, next); restarted.context.clearOnlineCache();
     }
+  });
+  await check('an old website compatibility output is retired even in the active window', () => {
+    const h = load(), output = h.context.compatPathFor('S', 10);
+    fs.writeFileSync(output, Buffer.alloc(4096));
+    fs.writeFileSync(output + '.json', JSON.stringify({ vid: 'v10', seriesId: 'S', vidIndex: 10, quality: 'auto', publicFallback: true }));
+    assert.equal(window(h, 10).success, true);
+    assert.equal(fs.existsSync(output), false);
+    assert.equal(fs.existsSync(output + '.json'), false);
   });
   await check('same-size corrupt cache is rejected after restart and repaired', async () => {
     const h = load(); window(h, 10); const a = await prepare(h, 10); await release(h, a);

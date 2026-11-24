@@ -81,6 +81,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   const [compatError, setCompatError] = useState('');
   const [decodeFailed, setDecodeFailed] = useState(false);    // 当前集解不出画面
   const [playbackError, setPlaybackError] = useState('');
+  const [sourceLookupFailed, setSourceLookupFailed] = useState(false);
   const [playbackVersion, setPlaybackVersion] = useState(0);
   const [compatCache, setCompatCache] = useState({ files: 0, bytes: 0 });
   const [mergeAsk, setMergeAsk] = useState(false);            // 合并格式选择
@@ -190,6 +191,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     setDecodeFailed(false);
     setCompatError('');
     setPlaybackError('');
+    setSourceLookupFailed(false);
     lastSavedRef.current = 0;
   }, [persistPosition, releaseOnline, cancelCompat, releasePrefetch, stopDecodeWatch]);
 
@@ -268,7 +270,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     && intent.selection === selectionVersion.current && intent.media === mediaVersion.current
     && intent.seriesId === selectedSeriesRef.current && intent.vidIndex === stateRef.current.currentIndex, []);
 
-  const recoverOnlineFailure = useCallback(async (ep, message) => {
+  const recoverOnlineFailure = useCallback(async (ep, message, errorCode) => {
     const seekTo = currentPosition();
     const autoplay = loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current;
     resetPlayback(autoplay);
@@ -277,6 +279,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       selection: selectionVersion.current, media: mediaVersion.current, seekTo, autoplay, submitting: true };
     fallbackRef.current = intent;
     setPlaybackError(message);
+    setSourceLookupFailed(errorCode === 'SOURCE_UNAVAILABLE');
     try {
       const data = await loadDetail(intent.seriesId);
       if (!isCurrentFallback(intent)) return;
@@ -522,10 +525,10 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           });
         } else {
           setCompatProgress(null);
-          if (autoCompat && !res?.cancelled && reconnectOnce()) return;
+          if (autoCompat && !res?.cancelled && res?.errorCode !== 'SOURCE_UNAVAILABLE' && reconnectOnce()) return;
           const message = (res && res.error) || '转码失败';
           if (!res?.cancelled && onlineSourceRef.current === `${activeSeriesId}:${vidIndex}`) {
-            await recoverOnlineFailure(ep, message);
+            await recoverOnlineFailure(ep, message, res?.errorCode);
             return;
           }
           setDecodeFailed(true);
@@ -671,7 +674,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           return;
         }
         if (!res || !res.success) {
-          await recoverOnlineFailure(ep, (res && res.error) || '在线播放准备失败');
+          await recoverOnlineFailure(ep, (res && res.error) || '在线播放准备失败', res?.errorCode);
           return;
         }
         request.streamId = res.streamId;
@@ -1523,8 +1526,8 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {downloadQuality !== 'auto' && <button className="btn btn-outline" disabled={qualityLoading}
                   onClick={() => changeQuality('auto')}>改用 App 最高可用画质</button>}
-                {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
-                {fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
+                {!sourceLookupFailed && current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
+                {!sourceLookupFailed && fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div></>
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>

@@ -63,6 +63,7 @@ x264 是唯一非系统静态依赖（GPLv2-or-later），整体构建为 GPLv3-
 
 改编自 woshishiq1/drpys，经 N3urda/hongguoTV 的 vendor 源码核对，GPL-3.0。
 完整来源与修改说明见 `src/native/licenses/NOTICE.txt`，许可见同目录 `LICENSE.drpys.txt`。
+App V5 播放模块来自 jackotom/hongguo-drama `2303f85b`，其中 `playback-v5.js` 保留 N3urda/hongguoTV 与 drpys 的 GPL-3.0-only 来源说明。
 
 2026-10-28 从 jackotom/hongguo-drama 的 4.2 源码同步匿名播放会话与直接模型适配。
 匿名注册的 ttEncrypt 和协议字段源自 [tsukiyo-zero/hongguoTV](https://github.com/tsukiyo-zero/hongguoTV) 的
