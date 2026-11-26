@@ -629,24 +629,32 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
     const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
     return await cachedRequest(cacheKey, 30000, async () => {
-      try {
-        const app = require('./app-source');
-        const request = { quality, preferQuality: true };
-        if (app.fetchCurrentAppPlayUrl) {
-          try {
-            return await app.fetchCurrentAppPlayUrl(String(vid), request);
-          } catch (error) {
-            if (!['EMPTY_RESPONSE', 'MISSING_MODEL', 'INVALID_RESPONSE'].includes(error.code)) throw error;
+      const app = require('./app-source');
+      const routes = [
+        ['app-current', app.fetchCurrentAppPlayUrl],
+        ['app-player', app.fetchAppPlayerPlayUrl],
+        ['app-legacy', app.fetchAppPlayUrl],
+      ].filter(([, fetchModel]) => typeof fetchModel === 'function');
+      const attempts = [];
+      const deadline = Date.now() + 26000;
+      for (const [route, fetchModel] of routes) {
+        try {
+          const result = await fetchModel(String(vid), { quality, preferQuality: true, deadline });
+          return attempts.length ? { ...result, attempts } : result;
+        } catch (error) {
+          const failure = sourceFailure('app', error);
+          attempts.push({ route, code: failure.code });
+          const canTryNext = error.code !== 'DEVICE_REGISTRATION_FAILED' &&
+            /^(?:EMPTY_RESPONSE|MISSING_MODEL|INVALID_RESPONSE|NO_PLAYABLE_SOURCE|QUALITY_UNAVAILABLE|RESOLUTION_UNKNOWN|UNSUPPORTED_CODEC|TIMEOUT|NETWORK_ERROR|HTTP_(?:408|5\d\d))$/.test(failure.code);
+          if (route === routes.at(-1)[0] || !canTryNext || Date.now() >= deadline) {
+            throw Object.assign(unavailableSources([failure], quality), { attempts });
           }
         }
-        return await app.fetchAppPlayUrl(String(vid), request);
-      } catch (error) {
-        throw unavailableSources([sourceFailure('app', error)], quality);
       }
     }, options);
   } catch (error) {
     return { url: null, spadeA: null, codec: null, error: error.message,
-      ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code, sources: error.sources } : {}) };
+      ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code, sources: error.sources, attempts: error.attempts } : {}) };
   }
 }
 
@@ -668,6 +676,7 @@ function sourceFailure(source, error) {
   if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
   if (code === 'EMPTY_RESPONSE') return { source, code, message: '接口返回空响应（HTTP 200）' };
+  if (code === 'RATE_LIMITED') return { source, code, message: '接口要求稍后重试' };
   if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };

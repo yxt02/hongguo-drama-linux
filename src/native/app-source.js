@@ -16,6 +16,7 @@ const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
 const PRELOAD_API = 'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1';
+const PLAYER_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
@@ -155,7 +156,7 @@ function playbackRequest(payload, identity, host = new URL(VIDEO_API).hostname) 
     } };
 }
 
-function preloadRequest(identity, videoId) {
+function currentPlaybackRequest(identity, videoId, endpoint) {
     // Current-app profile from N3urda/hongguoTV ef328f3a: V5 preload + device_level=2.
     const payload = JSON.stringify({
         biz_param: { detail_page_version: 0, device_level: 2, disable_digg_stat: false,
@@ -166,7 +167,7 @@ function preloadRequest(identity, videoId) {
     });
     const body = gzipSync(Buffer.from(payload));
     const signed = signPlaybackV5({
-        base: PRELOAD_API,
+        base: endpoint,
         values: {
             aid: '8662', app_name: 'novelread', version_code: '74532', version_name: '7.4.5.32',
             update_version_code: '74532', manifest_version_code: '74532', os: 'android', ssmix: 'a',
@@ -333,6 +334,9 @@ async function requestJson(url, options, deadline, signal) {
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
         if (typeof response.data === 'string' && !response.data.trim()) {
+            if (response.headers?.['retry-after']) {
+                throw Object.assign(new Error('App 接口要求稍后重试'), { code: 'RATE_LIMITED' });
+            }
             throw Object.assign(new Error('App 接口返回空响应，播放会话自动恢复未成功，请稍后重试'), { code: 'EMPTY_RESPONSE' });
         }
         const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
@@ -352,8 +356,8 @@ async function fetchAppPlayUrl(vid, options = {}) {
     });
     let identity = await getPlaybackDevice(requestJson);
     // Registration has its own 8s budget; it must not consume the model request budget.
-    const deadline = Date.now() + 12000;
-    const signal = AbortSignal.timeout(12000);
+    const deadline = Math.min(options.deadline ?? Infinity, Date.now() + 12000);
+    const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
     let response;
     for (let attempt = 0; attempt < 2; attempt++) {
         const signed = playbackRequest(payload, identity, attempt ? 'api5-normal-hl.fqnovel.com' : new URL(VIDEO_API).hostname);
@@ -364,7 +368,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
         } catch (error) {
             if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
             // A throttled renewal must still permit one alternate-host attempt with the same identity.
-            if (deadline - Date.now() >= 8000) {
+            if (deadline - Date.now() >= 8500) {
                 try { identity = await getPlaybackDevice(requestJson, identity); }
                 catch (_) { /* Keep the previously registered identity for the alternate route. */ }
             }
@@ -376,20 +380,28 @@ async function fetchAppPlayUrl(vid, options = {}) {
     return resolvePlaybackModel(response.data?.[vid], vid, options, deadline, signal);
 }
 
-async function fetchCurrentAppPlayUrl(vid, options = {}) {
+function fetchCurrentAppPlayUrl(vid, options = {}) {
+    return fetchSignedAppModel(vid, options, PRELOAD_API, 8000, 'app-current');
+}
+
+function fetchAppPlayerPlayUrl(vid, options = {}) {
+    return fetchSignedAppModel(vid, options, PLAYER_API, 4000, 'app-player');
+}
+
+async function fetchSignedAppModel(vid, options, endpoint, timeout, sourceProvider) {
     normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
     const identity = await getPlaybackDevice(requestJson);
-    const deadline = Date.now() + 8000;
-    const signal = AbortSignal.timeout(8000);
-    const signed = preloadRequest(identity, vid);
+    const deadline = Math.min(options.deadline ?? Infinity, Date.now() + timeout);
+    const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+    const signed = currentPlaybackRequest(identity, vid, endpoint);
     const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
     if (Number(response.code ?? response.Code ?? 0) !== 0) {
         throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     }
     const entries = response.data?.['1004'] ?? response.data?.video_model_data ?? response.data;
-    return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true }, deadline, signal);
+    return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true, sourceProvider }, deadline, signal);
 }
 
 async function resolvePlaybackModel(entry, vid, options, deadline, signal) {
@@ -500,7 +512,7 @@ function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetad
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         // App video CDN rejects browser Referer headers (HTTP 403).
                         userAgent: options.current ? 'okhttp/4.12.0' : inline ? PLAYBACK_UA : VIDEO_UA,
-                        sourceProvider: options.current ? 'app-current' : 'app-legacy',
+                        sourceProvider: options.sourceProvider || 'app-legacy',
                         omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         width: selected.width, height: selected.height });
                 } catch (error) { lastError = error; }
@@ -512,4 +524,4 @@ function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetad
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE', missingEncryptionMetadata });
 }
 
-module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };
+module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, fetchAppPlayerPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };

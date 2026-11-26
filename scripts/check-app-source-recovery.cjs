@@ -71,7 +71,30 @@ function row(definition, width, height, suffix) {
   };
 }
 
+function checkPlaybackV5Envelope() {
+  const now = 1800000000000;
+  const sm3 = require('../src/native/sm3');
+  const signer = new URL('https://example.test/model?device_id=123&iid=456&cdid=synthetic&version_name=7.4.5.32&channel=update_64&os_version=16&device_type=TestTV&_rticket=1800000000003');
+  const queryHash = sm3(Buffer.from(signer.search.slice(1)));
+  const bodyHash = crypto.createHash('md5').update(Buffer.from('H4sIAAECAwQ=', 'base64')).digest();
+  const module = { exports: {} };
+  const file = path.join(path.dirname(sourcePath), 'playback-v5.js');
+  vm.runInNewContext(fs.readFileSync(file, 'utf8') + '\nmodule.exports = { medusa, hashF13 };', {
+    module, Buffer, Date: { now: () => now }, Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
+    require: name => name === 'node:crypto' ? { ...crypto, randomBytes: size => size === 18
+      ? Buffer.from('synthetic'.padEnd(24, 'A'), 'base64url') : Buffer.from([0, 0, 0, 128]) }
+      : name === './sm3' ? sm3 : require(name),
+  }, { filename: file });
+  const { medusa, hashF13 } = module.exports;
+  const ts = now / 1000;
+  const value = medusa(queryHash, hashF13(queryHash, bodyHash, ts), ts, Object.fromEntries(signer.searchParams), 312, now);
+  // SHA-256 of the independent synthetic x-medusa wire fixture in hongguoTV PR #122.
+  assert.equal(crypto.createHash('sha256').update(value).digest('hex'),
+    '34e28e564fc7b3e9dae89e335b0c2abd159f642fd8db3ec50ad219ce4795b21f');
+}
+
 (async () => {
+  checkPlaybackV5Envelope();
   const empty = await load(async () => ({
     status: 200,
     headers: { 'content-type': 'application/json', 'x-tt-logid': 'empty-log' },
@@ -111,6 +134,21 @@ function row(definition, width, height, suffix) {
   assert.equal(currentResult.width, 1080);
   await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchCurrentAppPlayUrl(vid),
     error => error.code === 'MISSING_MODEL');
+  const player = load(async config => {
+    const url = new URL(config.url);
+    assert.equal(url.pathname, '/novel/player/multi_video_model/player/v1');
+    assert.equal(url.searchParams.get('version_code'), '74532');
+    assert.equal(config.method, 'POST');
+    assert.deepEqual(JSON.parse(require('node:zlib').gunzipSync(config.data)).mixed_video_id_map, { '1004': [vid] });
+    return inlineResponse([plain]);
+  });
+  const playerResult = await player.fetchAppPlayerPlayUrl(vid, { quality: '1080p' });
+  assert.equal(playerResult.sourceProvider, 'app-player');
+  assert.equal(playerResult.url, plain.main_url);
+  await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchAppPlayerPlayUrl(vid),
+    error => error.code === 'MISSING_MODEL');
+  await assert.rejects(load(async () => ({ status: 200, headers: { 'retry-after': '30' }, data: '' }))
+    .fetchCurrentAppPlayUrl(vid), error => error.code === 'RATE_LIMITED');
   const identities = [{ device_id: '11', iid: '12', cdid: 'fixture' }, { device_id: '21', iid: '22', cdid: 'fixture' }];
   let recoverCalls = 0, renewals = 0;
   const recovery = load(async config => {

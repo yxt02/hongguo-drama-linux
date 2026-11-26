@@ -60,10 +60,11 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
         { quality, force: true });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
         ...sample, source: source.source || 'app', route: source.sourceProvider, width: source.width, height: source.height, codec: source.codec,
-        failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
+        attempts: source.attempts || [], failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
       assert.ok(source.url, source.error || 'source-health failed');
       if (lateEpisodes) {
-        assert.equal(source.sourceProvider, 'app-current');
+        assert.equal(source.source, 'app');
+        assert.ok(['app-current', 'app-player', 'app-legacy'].includes(source.sourceProvider));
         assert.ok(Math.min(source.width, source.height) >= 720, 'Expected an App HD source for the later episode');
       }
       const result = await handlers['prepare-online-play']({}, { ...selected, quality, disk: true, requestId });
