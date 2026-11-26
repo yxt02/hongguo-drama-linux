@@ -111,6 +111,19 @@ function row(definition, width, height, suffix) {
   assert.equal(currentResult.width, 1080);
   await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchCurrentAppPlayUrl(vid),
     error => error.code === 'MISSING_MODEL');
+  const videoTab = load(async config => {
+    const url = new URL(config.url);
+    assert.equal(url.pathname, '/reading/bookapi/video_tab/multi_video_model/v1/');
+    assert.equal(url.searchParams.get('video_id'), vid);
+    assert.equal(config.method, 'GET');
+    assert.equal(config.data, undefined);
+    return inlineResponse([plain]);
+  });
+  const tabResult = await videoTab.fetchVideoTabPlayUrl(vid, { quality: '1080p' });
+  assert.equal(tabResult.sourceProvider, 'app-video-tab');
+  assert.equal(tabResult.url, plain.main_url);
+  await assert.rejects(load(async () => inlineResponse([plain], '999')).fetchVideoTabPlayUrl(vid),
+    error => error.code === 'MISSING_MODEL');
   const identities = [{ device_id: '11', iid: '12', cdid: 'fixture' }, { device_id: '21', iid: '22', cdid: 'fixture' }];
   let recoverCalls = 0, renewals = 0;
   const recovery = load(async config => {

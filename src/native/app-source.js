@@ -16,6 +16,7 @@ const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
 const PRELOAD_API = 'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1';
+const VIDEO_TAB_API = 'https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
@@ -179,6 +180,24 @@ function preloadRequest(identity, videoId) {
     return { ...signed, body, method: 'POST', headers: { ...signed.headers,
         'User-Agent': 'okhttp/4.12.0', Accept: 'application/json',
         'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip' } };
+}
+
+function videoTabRequest(identity, videoId) {
+    // App video-tab route from jackotom/hongguo-drama 8.4.
+    const signed = signPlaybackV5({
+        base: VIDEO_TAB_API,
+        values: {
+            aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
+            channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10',
+            os_version: '12', update_version_code: '74332',
+            iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id,
+            video_id: videoId, video_id_type: '0', device_level: '1',
+            need_all_video_definition: '1', need_mp4_align: '0', use_os_player: '0',
+            video_platform: '1024', source: '0', from_video_id: '',
+        },
+        body: null, now: Date.now(),
+    });
+    return { ...signed, method: 'GET', headers: { ...signed.headers, 'User-Agent': 'okhttp/4.12.0', Accept: 'application/json' } };
 }
 
 function parseSearchInteger(value) {
@@ -352,8 +371,8 @@ async function fetchAppPlayUrl(vid, options = {}) {
     });
     let identity = await getPlaybackDevice(requestJson);
     // Registration has its own 8s budget; it must not consume the model request budget.
-    const deadline = Date.now() + 12000;
-    const signal = AbortSignal.timeout(12000);
+    const deadline = Math.min(options.deadline ?? Infinity, Date.now() + 12000);
+    const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
     let response;
     for (let attempt = 0; attempt < 2; attempt++) {
         const signed = playbackRequest(payload, identity, attempt ? 'api5-normal-hl.fqnovel.com' : new URL(VIDEO_API).hostname);
@@ -364,7 +383,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
         } catch (error) {
             if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
             // A throttled renewal must still permit one alternate-host attempt with the same identity.
-            if (deadline - Date.now() >= 8000) {
+            if (deadline - Date.now() >= 8500) {
                 try { identity = await getPlaybackDevice(requestJson, identity); }
                 catch (_) { /* Keep the previously registered identity for the alternate route. */ }
             }
@@ -376,20 +395,28 @@ async function fetchAppPlayUrl(vid, options = {}) {
     return resolvePlaybackModel(response.data?.[vid], vid, options, deadline, signal);
 }
 
-async function fetchCurrentAppPlayUrl(vid, options = {}) {
+function fetchCurrentAppPlayUrl(vid, options = {}) {
+    return fetchSignedAppModel(vid, options, preloadRequest, 8000, 'app-current');
+}
+
+function fetchVideoTabPlayUrl(vid, options = {}) {
+    return fetchSignedAppModel(vid, options, videoTabRequest, 4000, 'app-video-tab');
+}
+
+async function fetchSignedAppModel(vid, options, buildRequest, timeout, sourceProvider) {
     normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
     const identity = await getPlaybackDevice(requestJson);
-    const deadline = Date.now() + 8000;
-    const signal = AbortSignal.timeout(8000);
-    const signed = preloadRequest(identity, vid);
+    const deadline = Math.min(options.deadline ?? Infinity, Date.now() + timeout);
+    const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+    const signed = buildRequest(identity, vid);
     const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
     if (Number(response.code ?? response.Code ?? 0) !== 0) {
         throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     }
     const entries = response.data?.['1004'] ?? response.data?.video_model_data ?? response.data;
-    return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true }, deadline, signal);
+    return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true, sourceProvider }, deadline, signal);
 }
 
 async function resolvePlaybackModel(entry, vid, options, deadline, signal) {
@@ -500,7 +527,7 @@ function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetad
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         // App video CDN rejects browser Referer headers (HTTP 403).
                         userAgent: options.current ? 'okhttp/4.12.0' : inline ? PLAYBACK_UA : VIDEO_UA,
-                        sourceProvider: options.current ? 'app-current' : 'app-legacy',
+                        sourceProvider: options.sourceProvider || 'app-legacy',
                         omitReferer: true, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         width: selected.width, height: selected.height });
                 } catch (error) { lastError = error; }
@@ -512,4 +539,4 @@ function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetad
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE', missingEncryptionMetadata });
 }
 
-module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };
+module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, fetchVideoTabPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };

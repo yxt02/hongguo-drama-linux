@@ -48,7 +48,7 @@ function routeFixture() {
 const checks = [
   ['current App source wins, legacy is bounded, and an explicit denial ends the lookup', async () => {
     const calls = [];
-    let currentError;
+    let currentError, tabError;
     const fallback = load('hongguo.js', {
       axios: { get: () => assert.fail('Web must not be queried for media'), post: () => assert.fail('Web must not be queried for media') },
       './app-source': {
@@ -56,6 +56,11 @@ const checks = [
           calls.push(['current', options.quality]);
           if (currentError) throw currentError;
           return { url: media('current'), source: 'app' };
+        },
+        async fetchVideoTabPlayUrl(vid, options) {
+          calls.push(['video-tab', options.quality]);
+          if (tabError) throw tabError;
+          return { url: media('video-tab'), source: 'app' };
         },
         async fetchAppPlayUrl(vid, options) {
           calls.push(['legacy', options.quality]);
@@ -67,8 +72,21 @@ const checks = [
     assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('current'));
     assert.deepEqual(calls.splice(0), [['current', '1080p']]);
     currentError = Object.assign(new Error('empty'), { code: 'EMPTY_RESPONSE' });
+    const recovered = await fallback.fetchPlayUrlSingle('11', '1', options);
+    assert.equal(recovered.url, media('video-tab'));
+    assert.equal(recovered.attempts[0].route, 'app-current');
+    assert.equal(recovered.attempts[0].code, 'EMPTY_RESPONSE');
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['video-tab', '1080p']]);
+    currentError = Object.assign(new Error('measured dimensions below 1080p'), { code: 'QUALITY_UNAVAILABLE' });
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('video-tab'));
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['video-tab', '1080p']]);
+    currentError = Object.assign(new Error('temporarily unavailable'), { status: 503 });
+    tabError = Object.assign(new Error('missing model'), { code: 'MISSING_MODEL' });
     assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).url, media('legacy'));
-    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['legacy', '1080p']]);
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['video-tab', '1080p'], ['legacy', '1080p']]);
+    tabError = Object.assign(new Error('explicit denial'), { status: 403 });
+    assert.equal((await fallback.fetchPlayUrlSingle('11', '1', options)).sources[0].code, 'HTTP_403');
+    assert.deepEqual(calls.splice(0), [['current', '1080p'], ['video-tab', '1080p']]);
     for (const status of [401, 403, 429]) {
       currentError = Object.assign(new Error('denied'), { status });
       const result = await fallback.fetchPlayUrlSingle('11', '1', options);
@@ -139,7 +157,7 @@ const checks = [
       [{ one: { codec_type: 'bytevc2', width: 1920, height: 1080, main_url: media('unsupported') } }, 'UNSUPPORTED_CODEC', /暂不支持的编码/],
       [{}, 'NO_PLAYABLE_SOURCE', /暂未取得有效片源/],
     ]) {
-      const app = appFixture(rows), f = load('hongguo.js', { './app-source': app });
+      const app = appFixture(rows), f = load('hongguo.js', { './app-source': { fetchAppPlayUrl: app.fetchAppPlayUrl } });
       const result = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' });
       assert.equal(result.url, null); assert.equal(result.sources[0].code, code);
       assert.match(result.error, message); assert.match(result.error, /1080p，未降级/);

@@ -629,24 +629,32 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
     const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
     return await cachedRequest(cacheKey, 30000, async () => {
-      try {
-        const app = require('./app-source');
-        const request = { quality, preferQuality: true };
-        if (app.fetchCurrentAppPlayUrl) {
-          try {
-            return await app.fetchCurrentAppPlayUrl(String(vid), request);
-          } catch (error) {
-            if (!['EMPTY_RESPONSE', 'MISSING_MODEL', 'INVALID_RESPONSE'].includes(error.code)) throw error;
+      const app = require('./app-source');
+      const routes = [
+        ['app-current', app.fetchCurrentAppPlayUrl],
+        ['app-video-tab', app.fetchVideoTabPlayUrl],
+        ['app-legacy', app.fetchAppPlayUrl],
+      ].filter(([, fetchModel]) => typeof fetchModel === 'function');
+      const attempts = [];
+      const deadline = Date.now() + 26000;
+      for (const [route, fetchModel] of routes) {
+        try {
+          const result = await fetchModel(String(vid), { quality, preferQuality: true, deadline });
+          return attempts.length ? { ...result, attempts } : result;
+        } catch (error) {
+          const failure = sourceFailure('app', error);
+          attempts.push({ route, code: failure.code });
+          const canTryNext = error.code !== 'DEVICE_REGISTRATION_FAILED' &&
+            /^(?:EMPTY_RESPONSE|MISSING_MODEL|INVALID_RESPONSE|NO_PLAYABLE_SOURCE|QUALITY_UNAVAILABLE|RESOLUTION_UNKNOWN|UNSUPPORTED_CODEC|TIMEOUT|NETWORK_ERROR|HTTP_(?:408|5\d\d))$/.test(failure.code);
+          if (route === routes.at(-1)[0] || !canTryNext || Date.now() >= deadline) {
+            throw Object.assign(unavailableSources([failure], quality), { attempts });
           }
         }
-        return await app.fetchAppPlayUrl(String(vid), request);
-      } catch (error) {
-        throw unavailableSources([sourceFailure('app', error)], quality);
       }
     }, options);
   } catch (error) {
     return { url: null, spadeA: null, codec: null, error: error.message,
-      ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code, sources: error.sources } : {}) };
+      ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code, sources: error.sources, attempts: error.attempts } : {}) };
   }
 }
 
