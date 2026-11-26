@@ -95,7 +95,7 @@ function verifyBinary(file) {
   assert.ok(deps.length > 0, path.basename(file) + ' 既非静态也无可见动态依赖');
   for (const dep of deps) {
     assert.ok(
-      dep.startsWith('/lib/') || dep.startsWith('/lib64/'),
+      /^\/(?:usr\/)?lib(?:64)?\//.test(dep),
       path.basename(file) + ' 含非系统动态库: ' + dep
     );
   }
