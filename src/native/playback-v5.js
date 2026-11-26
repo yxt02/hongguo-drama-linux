@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Port of N3urda/hongguoTV 18c37c2afd0567520135abcae312352542f09083:
 // Signer.kt, AesV3.kt, V5Constants.kt; originally drpys 22261ad (GPL-3.0).
+// Playback envelope updated from N3urda/hongguoTV 69f219ef.
 // Public wire constants, no captured sessions, SDK, VM or PolyForm implementation.
 'use strict';
 
 const crypto = require('node:crypto');
 const { gunzipSync } = require('node:zlib');
 const sm3 = require('./sm3');
-const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
+const PROCESS_TOKEN = 'A' + crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const MAGIC = Buffer.from('2d4b4fca49750d433fb5ae2c226dcc56', 'hex');
 const SIGN_KEY = Buffer.from('b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d', 'hex');
@@ -33,6 +34,11 @@ function proto(fields) {
     if (type === 'sint') {
       const n = BigInt(value);
       return Buffer.concat([varint(tag * 8), varint(n < 0n ? -n * 2n - 1n : n * 2n)]);
+    }
+    if (type === 'float') {
+      const bytes = Buffer.alloc(4);
+      bytes.writeFloatLE(value);
+      return Buffer.concat([varint(tag * 8 + 5), bytes]);
     }
     const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
     return bytes.length ? Buffer.concat([varint(tag * 8 + 2), varint(bytes.length), bytes]) : Buffer.alloc(0);
@@ -187,18 +193,27 @@ function xmxor(data, key) {
   return encoded;
 }
 
-function medusa(query, f13, ts, who, field21 = 377) {
-  const flags = Buffer.alloc(8);
+function medusa(query, f13, ts, who, field21, now) {
+  const flags = Buffer.from('4480000000000000', 'hex');
+  const brand = who.device_brand || 'HONOR';
+  const type = who.device_type;
+  const launch = Math.floor(Math.random() * 21) + 100;
+  const pid = Math.floor(Math.random() * 2000) + 10001;
   const device = proto([[1,1,'sint'], [2,2,'sint'], [3,'8662'], [4,who.device_id],
-    [5,PROCESS_NONCE], [6,'!noperm!'], [12,'Asia/Shanghai,8'], [13,'zh_CN'],
-    [22,who.os_version], [25,PROCESS_STARTED,'sint'], [30,who.device_type], [31,'HONOR'],
-    [32,who.device_type], [34,'HONOR']]);
-  const env = proto([[6,'v04.10.03.04-bugfix'], [8,who.channel], [12,device], [14,who.version_name]]);
+    [5,PROCESS_TOKEN], [6,'!noperm!'], [7,-888888,'sint'], [8,-888888,'sint'], [9,3,'sint'], [10,-888888,'sint'],
+    [11,'!notset!'], [12,'Asia/Shanghai,8'], [13,'zh_CN'], [14,4,'sint'],
+    [16,0,'float'], [17,0,'float'], [18,0,'float'], [19,0,'float'], [20,0,'float'], [21,0,'float'],
+    [22,who.os_version], [23,41,'sint'], [24,36,'sint'],
+    [25,PROCESS_STARTED,'sint'], [26,PROCESS_STARTED,'sint'], [27,PROCESS_STARTED,'sint'], [28,now,'sint'],
+    [29,-1,'sint'], [30,type], [31,brand], [32,type], [33,type], [34,brand], [35,brand], [36,brand], [38,31,'sint']]);
+  const env = proto([[1,launch,'sint'], [2,247235599,'sint'], [3,247235596,'sint'], [5,7,'sint'],
+    [6,'v04.10.03.04-bugfix'], [7,pid,'sint'], [8,who.channel], [12,device],
+    [13,proto([[1,ts,'sint'], [2,-2,'sint'], [4,200,'sint']])], [14,who.version_name]]);
   const message = proto([[1,MAGIC], [2,5,'sint'], [3,random32(),'sint'], [4,'8662'], [5,who.device_id],
     [6,'646637794'], [7,who.version_name], [8,'v04.10.03-ml-android'], [9,0x040a0300,'sint'],
     [10,flags], [12,ts,'sint'], [13,f13], [14,query.subarray(0,6)],
-    [15,proto([[1,1,'sint'], [2,1,'sint'], [3,1,'sint'], [5,1,'sint']])],
-    [17,ts,'sint'], [20,'none'], [21,field21,'sint'], [23,env],
+    [15,proto([[1,305,'sint'], [2,4,'sint'], [3,694367,'sint'], [5,1621072674,'sint']])],
+    [16,PROCESS_TOKEN], [17,ts,'sint'], [20,'none'], [21,field21,'sint'], [23,env],
     [24,'{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}']]);
   const nonce = random32(), high = (nonce >>> 16) & 255;
   const hash = sm3(Buffer.concat([SIGN_KEY, le32(nonce), SIGN_KEY]));
@@ -295,7 +310,7 @@ function signPlaybackV5(input) {
     if (branch(queryHash, bodyHash, ts) !== 12) continue;
     const f13 = hashF13(queryHash, bodyHash, ts);
     return { url: `${parsed.href}?${query}`, headers: {
-      'x-khronos': String(ts), 'x-helios': helios(ts), 'x-medusa': medusa(queryHash, f13, ts, who, field21),
+      'x-khronos': String(ts), 'x-helios': helios(ts), 'x-medusa': medusa(queryHash, f13, ts, who, field21, now),
       ...(hasBody ? { 'x-ss-stub': bodyHash.toString('hex').toUpperCase() } : {}),
     } };
   }

@@ -64,7 +64,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       assert.ok(source.url, source.error || 'source-health failed');
       if (lateEpisodes) {
         assert.equal(source.source, 'app');
-        assert.ok(['app-current', 'app-video-tab', 'app-legacy'].includes(source.sourceProvider));
+        assert.ok(['app-current', 'app-player', 'app-legacy'].includes(source.sourceProvider));
         assert.ok(Math.min(source.width, source.height) >= 720, 'Expected an App HD source for the later episode');
       }
       const result = await handlers['prepare-online-play']({}, { ...selected, quality, disk: true, requestId });

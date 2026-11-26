@@ -632,7 +632,7 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
       const app = require('./app-source');
       const routes = [
         ['app-current', app.fetchCurrentAppPlayUrl],
-        ['app-video-tab', app.fetchVideoTabPlayUrl],
+        ['app-player', app.fetchAppPlayerPlayUrl],
         ['app-legacy', app.fetchAppPlayUrl],
       ].filter(([, fetchModel]) => typeof fetchModel === 'function');
       const attempts = [];
@@ -676,6 +676,7 @@ function sourceFailure(source, error) {
   if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
   if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
   if (code === 'EMPTY_RESPONSE') return { source, code, message: '接口返回空响应（HTTP 200）' };
+  if (code === 'RATE_LIMITED') return { source, code, message: '接口要求稍后重试' };
   if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
   if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
   if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
