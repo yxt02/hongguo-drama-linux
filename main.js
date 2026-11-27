@@ -438,7 +438,7 @@ function saveSeriesRegistry() {
  * 已有的不覆盖 episodes（避免接口异常时把好数据冲掉），仅补全标题与封面。
  */
 function upsertSeriesRegistry(data) {
-  if (!data || !data.series_id || !Array.isArray(data.episodes) || data.episodes.length === 0) return;
+  if (!data || data.stale || !data.series_id || !Array.isArray(data.episodes) || data.episodes.length === 0) return;
   const sid = String(data.series_id);
   const idx = seriesRegistry.findIndex((s) => String(s.series_id) === sid);
   const entry = {
@@ -454,6 +454,7 @@ function upsertSeriesRegistry(data) {
       cover: e.cover || '',
       web_available: e.web_available ?? null,
       locked: e.locked === true,
+      content_type: e.content_type === '1001' ? '1001' : undefined,
     })),
     updatedAt: Date.now(),
     dismissed: false, // 用户主动移除过；再次登记时自动恢复显示
@@ -722,7 +723,10 @@ async function executeHongguoDownload(task) {
         cached.lastUsed = Date.now();
       }
     }
-    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, { playInfo: checkedPlayInfo, quality, preferQuality: true, force: true, cancelToken: source.token }, async playInfo => {
+    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, {
+      playInfo: checkedPlayInfo, quality, preferQuality: true, force: true, cancelToken: source.token,
+      contentType: hongguoInfo?.content_type,
+    }, async playInfo => {
       source.token.throwIfRequested();
       if (playInfo.format === 'hls') {
         await prepareHlsFile(playInfo,tmpPath,{cancelToken:source.token,onProgress:received => { task.receivedBytes = received; sendToRenderer('download-progress',{id,progress:0,receivedBytes:received,totalBytes:0}); }});
@@ -1900,6 +1904,9 @@ function awaitMediaOperation(promise, signal, timeout = 0) {
 
 /** Retry the complete operation so a broken body never counts as a successful download. */
 async function withMediaRecovery(vid, seriesId, options, consume) {
+  const contentType = options.contentType ?? seriesRegistry
+    .find(series => String(series.series_id) === String(seriesId))?.episodes
+    ?.find(episode => String(episode.vid) === String(vid))?.content_type;
   const controller = new AbortController();
   const abort = () => controller.abort();
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -1931,7 +1938,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       let info;
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
-          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0 }), controller.signal, 30000);
+          { quality: options.quality, preferQuality: options.preferQuality, force: options.force || round > 0, contentType }), controller.signal, 30000);
       } catch (error) {
         cancelled();
         if (!recoverable(error)) throw error;
@@ -3028,6 +3035,7 @@ async function enqueueEpisodes({ seriesId, seriesTitle, episodes, cover, quality
         series_title: cleanSeriesTitle,
         vid_index: ep.vid_index,
         ep_title: ep.title,
+        content_type: String(ep.content_type) === '1001' ? '1001' : undefined,
       },
     };
 

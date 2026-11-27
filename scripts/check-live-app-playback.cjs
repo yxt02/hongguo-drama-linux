@@ -12,26 +12,48 @@ const exec = require('node:util').promisify(execFile);
 const { createRequire } = require('node:module');
 const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), req = createRequire(file);
 
+const knownEpisode = { seriesId: '7516411117833292825', vid: '7516512118569454654', vidIndex: 4,
+  quality: '1080p', source: 'app' };
+
 (async () => {
   const lateEpisodes = process.env.HONGGUO_LIVE_LATE === '1';
   const provider = req('./src/native/hongguo');
-  let cases = process.env.HONGGUO_LIVE_CASES ? JSON.parse(process.env.HONGGUO_LIVE_CASES) : [
-    { seriesId: '7516411117833292825', vid: '7516512118569454654', vidIndex: 4,
-      quality: '1080p', source: 'app' },
-  ];
+  let cases = process.env.HONGGUO_LIVE_CASES ? JSON.parse(process.env.HONGGUO_LIVE_CASES) : [knownEpisode];
   if (lateEpisodes && !process.env.HONGGUO_LIVE_CASES) {
     const series = [
-      { seriesId: '7690112243203050521', count: 2, quality: 'auto' }, // Upstream's Linux 8.2 fixture.
-      { seriesId: '7516411117833292825', count: 1, quality: '1080p' },
+      { seriesId: '7690112243203050521', episodeNumbers: [6, 12], quality: 'auto' },
+      { seriesId: '7516411117833292825', episodeNumbers: [6], quality: '1080p' },
     ];
-    const samples = await Promise.all(series.map(async ({ seriesId, count, quality }) => {
-      const catalog = await provider.fetchEpisodeListFromWeb(seriesId, Date.now() + 12000);
-      const rows = catalog.episodes.filter(ep => !ep.locked && ep.web_available === false && ep.vid_index >= 6);
-      assert.ok(rows.length >= count, `Series ${seriesId} has too few episodes outside the website preview range`);
-      const selected = [rows[0], rows[Math.min(6, rows.length - 1)]].slice(0, count);
-      return selected.map(ep => ({ seriesId, vid: ep.vid, vidIndex: ep.vid_index, quality, source: 'app' }));
-    }));
-    cases = samples.flat();
+    // A known numeric ID isolates App playback from any upstream catalogue change.
+    const fixed = async () => {
+      const source = await provider.fetchPlayUrlSingle(knownEpisode.vid, knownEpisode.seriesId,
+        { quality: knownEpisode.quality, force: true });
+      const passed = source.source === 'app' && !!source.url && Math.min(source.width, source.height) >= 1080;
+      console.log(JSON.stringify({ stage: 'fixed-episode-source', passed, series: knownEpisode.seriesId,
+        episode: knownEpisode.vidIndex, route: source.sourceProvider, attempts: source.attempts || [] }));
+      assert.ok(passed, source.error || 'Fixed episode has no App 1080p source');
+    };
+    const results = await Promise.allSettled([fixed(), ...series.map(async ({ seriesId, episodeNumbers, quality }) => {
+      try {
+        const catalog = await provider.fetchEpisodeList(seriesId, { deadline: Date.now() + 24000, force: true });
+        assert.equal(catalog.source, 'app', 'Expected the App detail endpoint to recover the directory');
+        assert.ok(catalog.total > 12);
+        assert.ok(catalog.episodes.every((ep, index) => /^\d+$/.test(ep.vid) && ep.vid_index === index + 1));
+        const selected = episodeNumbers.map(number => {
+          const ep = catalog.episodes[number - 1];
+          assert.ok(ep && !ep.locked, `Episode ${number} is not available in the App directory`);
+          return { seriesId, vid: ep.vid, vidIndex: ep.vid_index, contentType: ep.content_type, quality, source: 'app' };
+        });
+        console.log(JSON.stringify({ stage: 'episode-directory', passed: true, series: seriesId, total: catalog.total }));
+        return selected;
+      } catch (error) {
+        console.log(JSON.stringify({ stage: 'episode-directory', passed: false, series: seriesId, error: error.message }));
+        throw error;
+      }
+    })]);
+    const errors = results.filter(result => result.status === 'rejected').map(result => result.reason.message);
+    assert.equal(errors.length, 0, errors.join('；'));
+    cases = results.slice(1).flatMap(result => result.value);
   }
   const compat = process.env.HONGGUO_LIVE_COMPAT === '1';
   const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hongguo-live-main-'));
@@ -57,7 +79,7 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       const quality = selected.quality || 'auto', requestId = `live-${index}`;
       const sample = { series: selected.seriesId, episode: selected.vidIndex, requestedQuality: quality };
       const source = await provider.fetchPlayUrlSingle(selected.vid, selected.seriesId,
-        { quality, force: true });
+        { quality, force: true, contentType: selected.contentType });
       console.log(JSON.stringify({ stage: 'source-health', passed: !!source.url,
         ...sample, source: source.source || 'app', route: source.sourceProvider, width: source.width, height: source.height, codec: source.codec,
         attempts: source.attempts || [], failures: (source.sources || []).map(item => ({ source: item.source, code: item.code })) }));
@@ -99,7 +121,8 @@ const root = path.resolve(__dirname, '..'), file = path.join(root, 'main.js'), r
       const output = path.join(temp, `manual-${index}.mp4`);
       context.liveTask = { id: `live-task-${index}`, type: 'hongguo', status: 'pending', downloadQuality: quality,
         savePath: output, filename: `manual-${index}.mp4`, customDir: temp,
-        hongguoInfo: { vid: selected.vid, vid_index: selected.vidIndex, series_id: selected.seriesId, series_title: 'live-check' } };
+        hongguoInfo: { vid: selected.vid, vid_index: selected.vidIndex, series_id: selected.seriesId,
+          series_title: 'live-check', content_type: selected.contentType } };
       vm.runInContext('downloadTasks = [liveTask]', context);
       await context.executeHongguoDownload(context.liveTask);
       assert.equal(context.liveTask.status, 'completed', context.liveTask.error);

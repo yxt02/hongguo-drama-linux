@@ -17,6 +17,7 @@ const PROCESS_STARTED = Date.now();
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
 const PRELOAD_API = 'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1';
 const PLAYER_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1';
+const VIDEO_DETAIL_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_detail/v1/';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
@@ -156,16 +157,19 @@ function playbackRequest(payload, identity, host = new URL(VIDEO_API).hostname) 
     } };
 }
 
-function currentPlaybackRequest(identity, videoId, endpoint) {
+function currentPlaybackRequest(identity, videoId, endpoint, contentType) {
     // Current-app profile from N3urda/hongguoTV ef328f3a: V5 preload + device_level=2.
-    const payload = JSON.stringify({
+    return signCurrentAppRequest(identity, endpoint, {
         biz_param: { detail_page_version: 0, device_level: 2, disable_digg_stat: false,
             disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false,
             use_os_player: false, use_server_dns: false, video_platform: 1024 },
-        mixed_video_id_map: { '1004': [String(videoId)] },
+        mixed_video_id_map: { [contentType]: [String(videoId)] },
         dr_scene: 'preload',
     });
-    const body = gzipSync(Buffer.from(payload));
+}
+
+function signCurrentAppRequest(identity, endpoint, payload) {
+    const body = gzipSync(Buffer.from(JSON.stringify(payload)));
     const signed = signPlaybackV5({
         base: endpoint,
         values: {
@@ -308,6 +312,7 @@ function checkedUrl(value, domains) {
 
 async function requestJson(url, options, deadline, signal) {
     const axios = require('axios');
+    const { preserveEpisodeIds, ...request } = options;
     for (let redirects = 0; redirects < 4; redirects++) {
         url = checkedUrl(url, ['fqnovel.com', 'snssdk.com']);
         const timeout = deadline - Date.now();
@@ -315,9 +320,9 @@ async function requestJson(url, options, deadline, signal) {
         let response;
         try {
             response = await axios({
-                ...options, url, timeout, signal, maxRedirects: 0,
+                ...request, url, timeout, signal, maxRedirects: 0,
                 responseType: 'text', transformResponse: [(data) => data],
-                maxContentLength: 2 * 1024 * 1024, maxBodyLength: 1024 * 1024,
+                maxContentLength: (preserveEpisodeIds ? 8 : 2) * 1024 * 1024, maxBodyLength: 1024 * 1024,
                 validateStatus: () => true,
             });
         } catch (error) {
@@ -339,20 +344,48 @@ async function requestJson(url, options, deadline, signal) {
             }
             throw Object.assign(new Error('App 接口返回空响应，播放会话自动恢复未成功，请稍后重试'), { code: 'EMPTY_RESPONSE' });
         }
-        const parsed = typeof response.data === 'string' ? jsonBody(response.data) : response.data;
+        let data = response.data;
+        if (preserveEpisodeIds && typeof data === 'string') {
+            data = data.replace(/("(?:series_id|vid)"\s*:\s*)(\d{16,})(?=\s*[,}\]])/g, '$1"$2"');
+        }
+        const parsed = typeof data === 'string' ? jsonBody(data) : data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
         return parsed;
     }
     throw Object.assign(new Error('App 片源跳转次数过多'), { code: 'SECURITY_BLOCKED' });
 }
 
+async function fetchAppEpisodeList(seriesId, { deadline = Date.now() + 14000 } = {}) {
+    const sid = String(seriesId);
+    if (!/^\d{1,30}$/.test(sid)) throw new Error('剧集编号无效');
+    if (deadline <= Date.now()) throw Object.assign(new Error('App 详情请求超时'), { code: 'ETIMEDOUT' });
+    const identity = await getPlaybackDevice(requestJson);
+    // App detail request from jackotom/hongguo-drama v8.5.
+    const signed = signCurrentAppRequest(identity, VIDEO_DETAIL_API, {
+        series_id: sid,
+        biz_param: { caller_scene: 'single_col', detail_page_version: 0, from_video_id: '',
+            need_all_video_definition: false, need_mp4_align: false, source: 4, video_id_type: 1 },
+    });
+    const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+    const response = await requestJson(signed.url, {
+        method: signed.method, headers: signed.headers, data: signed.body, preserveEpisodeIds: true,
+    }, deadline, signal);
+    if (Number(response.code ?? response.Code) !== 0) {
+        throw Object.assign(new Error('App 详情接口拒绝请求'), { code: 'BUSINESS_REJECTED' });
+    }
+    const data = response.data?.video_data;
+    if (String(data?.series_id) !== sid) throw new Error('App 详情返回的剧集与请求不一致');
+    return data;
+}
+
 async function fetchAppPlayUrl(vid, options = {}) {
     normalizeDownloadQuality(options.quality);
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
+    const contentType = options.contentType === '1001' ? '1001' : '1004';
     const payload = JSON.stringify({
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
-        mixed_video_id_map: { '1004': [vid] },
+        mixed_video_id_map: { [contentType]: [vid] },
     });
     let identity = await getPlaybackDevice(requestJson);
     // Registration has its own 8s budget; it must not consume the model request budget.
@@ -377,7 +410,8 @@ async function fetchAppPlayUrl(vid, options = {}) {
         }
     }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
-    return resolvePlaybackModel(response.data?.[vid], vid, options, deadline, signal);
+    const entries = response.data?.[contentType] ?? response.data;
+    return resolvePlaybackModel(entries?.[vid], vid, options, deadline, signal);
 }
 
 function fetchCurrentAppPlayUrl(vid, options = {}) {
@@ -395,12 +429,13 @@ async function fetchSignedAppModel(vid, options, endpoint, timeout, sourceProvid
     const identity = await getPlaybackDevice(requestJson);
     const deadline = Math.min(options.deadline ?? Infinity, Date.now() + timeout);
     const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
-    const signed = currentPlaybackRequest(identity, vid, endpoint);
+    const contentType = options.contentType === '1001' ? '1001' : '1004';
+    const signed = currentPlaybackRequest(identity, vid, endpoint, contentType);
     const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
     if (Number(response.code ?? response.Code ?? 0) !== 0) {
         throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     }
-    const entries = response.data?.['1004'] ?? response.data?.video_model_data ?? response.data;
+    const entries = response.data?.[contentType] ?? response.data?.video_model_data ?? response.data;
     return resolvePlaybackModel(entries?.[vid], vid, { ...options, current: true, sourceProvider }, deadline, signal);
 }
 
@@ -524,4 +559,4 @@ function parsePlaybackStreams(info, vid, options, inline, requireEncryptionMetad
         : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE', missingEncryptionMetadata });
 }
 
-module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, fetchAppPlayerPlayUrl, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };
+module.exports = { fetchAppPlayUrl, fetchCurrentAppPlayUrl, fetchAppPlayerPlayUrl, fetchAppEpisodeList, signedSearchRequest, signedMetadataRequest, parseSearchInteger, requestJson, SEARCH_API, SEARCH_UA };
