@@ -149,6 +149,25 @@ function checkPlaybackV5Envelope() {
     error => error.code === 'MISSING_MODEL');
   await assert.rejects(load(async () => ({ status: 200, headers: { 'retry-after': '30' }, data: '' }))
     .fetchCurrentAppPlayUrl(vid), error => error.code === 'RATE_LIMITED');
+  const sid = '7706908220253555737';
+  const directory = load(async config => {
+    assert.equal(new URL(config.url).pathname, '/novel/player/video_detail/v1/');
+    assert.deepEqual(JSON.parse(require('node:zlib').gunzipSync(config.data)), {
+      series_id: sid, biz_param: { caller_scene: 'single_col', detail_page_version: 0, from_video_id: '',
+        need_all_video_definition: false, need_mp4_align: false, source: 4, video_id_type: 1 },
+    });
+    return { status: 200, headers: {}, data: `{"code":0,"data":{"video_data":{"series_id":${sid},"video_list":[{"vid":${vid},"vid_index":1}]}}}` };
+  });
+  const detail = await directory.fetchAppEpisodeList(sid);
+  assert.equal(detail.series_id, sid);
+  assert.equal(detail.video_list[0].vid, vid);
+  await assert.rejects(load(async () => ({ status: 200, headers: {}, data: '{"code":0,"data":{"video_data":{"series_id":"99"}}}' }))
+    .fetchAppEpisodeList(sid), /不一致/);
+  const contentType = load(async config => {
+    assert.deepEqual(JSON.parse(require('node:zlib').gunzipSync(config.data)).mixed_video_id_map, { '1001': [vid] });
+    return { status: 200, headers: {}, data: { data: { '1001': { [vid]: { video_model: { video_list: [plain] } } } } } };
+  });
+  assert.equal((await contentType.fetchCurrentAppPlayUrl(vid, { contentType: '1001' })).url, plain.main_url);
   const identities = [{ device_id: '11', iid: '12', cdid: 'fixture' }, { device_id: '21', iid: '22', cdid: 'fixture' }];
   let recoverCalls = 0, renewals = 0;
   const recovery = load(async config => {
