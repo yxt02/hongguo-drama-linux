@@ -3,7 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['package.json', '.github/workflows/linux.yml']
+    paths:
+      - package.json
+      - .github/workflows/linux.yml
+      - scripts/check-linux-update-bundle.cjs
 permissions:
   contents: write
 concurrency:
