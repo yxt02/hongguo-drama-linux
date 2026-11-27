@@ -163,10 +163,10 @@ function markWebMediaFailure(playInfo) {
 }
 
 /** 仅保留短期成功结果；重复点击共享请求，失败后立即允许重试。 */
-async function cachedRequest(key, ttl, load, { force = false } = {}) {
+async function cachedRequest(key, ttl, load, { force = false, maxStale = 0 } = {}) {
   const cached = responseCache.get(key);
   if (!force && cached && cached.expires > Date.now()) return cached.value;
-  responseCache.delete(key);
+  if (!maxStale || !cached || Date.now() >= cached.expires + maxStale) responseCache.delete(key);
   if (!force && pendingRequests.has(key)) return pendingRequests.get(key);
   const request = Promise.resolve().then(load).then(value => {
     // A forced lookup owns the cache even if an older request finishes later.
@@ -175,6 +175,11 @@ async function cachedRequest(key, ttl, load, { force = false } = {}) {
       if (responseCache.size > 128) responseCache.delete(responseCache.keys().next().value);
     }
     return value;
+  }, error => {
+    if (maxStale && cached && Date.now() < cached.expires + maxStale) {
+      return { ...cached.value, stale: true };
+    }
+    throw error;
   }).finally(() => {
     if (pendingRequests.get(key) === request) pendingRequests.delete(key);
   });
@@ -235,7 +240,7 @@ function parseEpisodeListHtml(html, seriesId) {
     throw new Error('官网返回的剧集与请求不一致或缺少剧集身份');
   }
   if (!Array.isArray(detail.vid_list)) throw new Error('官网页面未找到分集数据（vid_list）');
-  const vids = detail.vid_list.map(String);
+  const vids = detail.vid_list.map(episodeId);
   if (vids.some(vid => !/^\d{1,30}$/.test(vid)) || new Set(vids).size !== vids.length) {
     throw new Error('官网分集数据异常');
   }
@@ -262,6 +267,7 @@ function parseEpisodeListHtml(html, seriesId) {
     series_title: seriesTitle,
     cover: cover || (episodes[0] && episodes[0].cover) || '',
     total: episodes.length,
+    episode_count: expectedEpisodeCount(detail),
     web_accessible_episodes: webAccessibleEpisodes,
     episodes,
     source: 'web', // 标记来源，便于排查
@@ -432,9 +438,10 @@ async function fetchEpisodeList(seriesId, options = {}) {
   if (String(seriesId).startsWith('custom:')) return require('./custom-source').fetchEpisodeList(seriesId);
   if (String(seriesId).startsWith('hema:')) return require('./hema').fetchEpisodeList(seriesId);
   if (String(seriesId).startsWith('xifan:')) return require('./xifan').fetchEpisodeList(seriesId);
+  if (!/^\d{1,30}$/.test(String(seriesId))) throw new Error('剧集编号无效');
   return cachedRequest(`episodes:${seriesId}`, 60000,
     () => fetchEpisodeListFresh(seriesId, { deadline: Number(options.deadline) || 0 }),
-    { force: options.force === true });
+    { force: options.force === true, maxStale: 10 * 60 * 1000 });
 }
 
 function describeWebLoadError(error) {
@@ -491,59 +498,83 @@ async function fetchEpisodeListFromWeb(seriesId, deadline = 0) {
   }
 }
 
-async function fetchEpisodeListFresh(seriesId, { deadline = 0 } = {}) {
-  let webError;
-  try {
-    return await fetchEpisodeListFromWeb(seriesId, deadline);
-  } catch (error) {
-    webError = error;
+function episodeId(value) {
+  if (typeof value !== 'string' && !Number.isSafeInteger(value)) return '';
+  const id = String(value);
+  return /^\d{1,30}$/.test(id) && /[1-9]/.test(id) ? id : '';
+}
+
+function expectedEpisodeCount(detail) {
+  return Math.max(0, ...[detail.episode_cnt, detail.episode_total_cnt, detail.series_episode_info?.episode_cnt]
+    .map(Number).filter(count => Number.isSafeInteger(count) && count > 0));
+}
+
+function parseAppEpisodeDirectory(vd, sid, source) {
+  if (!vd || (vd.series_id != null && episodeId(vd.series_id) !== sid)) {
+    throw new Error('详情返回的剧集与请求不一致');
   }
-  const body = {
-    biz_param: DETAIL_BIZ_PARAM,
-    dr_scene: "preload",
-    series_id: seriesId,
-  };
-  let j;
-  try {
-    j = await apiCall("/novel/player/multi_video_detail/preload/v1", body, 3, 25000, deadline);
-  } catch (e) {
-    throw new Error(`获取分集失败：官网数据源（${webError.message}），备用接口（${e.message}）`);
+  const episodes = (Array.isArray(vd.video_list) ? vd.video_list : []).map((item, index) => {
+    const vid = episodeId(item?.vid);
+    const vidIndex = Number(item?.vid_index ?? index + 1);
+    if (!vid || (item.series_id != null && episodeId(item.series_id) !== sid)) {
+      throw new Error('详情分集编号无效或与请求不一致');
+    }
+    const contentType = [item.content_type, vd.content_type].map(String).find(type => ['1001', '1004'].includes(type));
+    return {
+      vid, vid_index: vidIndex, title: item.title || '',
+      series_id: sid, series_title: vd.series_title || '',
+      cover: item.cover_url || vd.series_cover || vd.cover_url || '',
+      content_type: contentType || '1004',
+      locked: item.disable_play === true || item.locked === true,
+    };
+  }).sort((a, b) => a.vid_index - b.vid_index);
+  if (!episodes.length || episodes.length < expectedEpisodeCount(vd) ||
+      new Set(episodes.map(item => item.vid)).size !== episodes.length ||
+      episodes.some((item, index) => item.vid_index !== index + 1)) {
+    throw new Error('分集目录不完整或存在重复集');
   }
-  if (!j || j.code !== 0) {
-    throw new Error("detail API 失败: " + JSON.stringify(j || {}).slice(0, 200));
-  }
-  const d = j.data || {};
-  const requested = String(seriesId);
-  // Never take the first key from an object: a mismatched response must fail closed.
-  const sid = Object.prototype.hasOwnProperty.call(d, requested) ? requested : '';
-  if (!sid) {
-    throw new Error("备用接口返回的剧集与请求不一致");
-  }
-  const vd = d[sid]?.video_data || {};
-  if (vd.series_id && String(vd.series_id) !== sid) {
-    throw new Error("备用接口返回的剧集与请求不一致");
-  }
-  const vl = vd.video_list || [];
-  if (vl.some(item => item?.series_id && String(item.series_id) !== sid)) {
-    throw new Error("备用接口返回了其他剧集的分集");
-  }
-  const eps = vl.map((item) => ({
-    vid: String(item.vid),
-    vid_index: item.vid_index || 0,
-    title: item.title || '',
-    series_id: String(item.series_id || sid),
-    series_title: vd.series_title || '',
-    cover: vd.series_cover || vd.cover_url || item.cover_url || '',
-  }));
-  if (!eps.length) throw new Error('备用接口分集列表为空');
-  eps.sort((a, b) => a.vid_index - b.vid_index);
   return {
-    series_id: String(sid),
+    series_id: sid,
     series_title: vd.series_title || '未命名短剧',
-    cover: vd.series_cover || vd.cover_url || (eps[0] && eps[0].cover) || '',
-    total: eps.length,
-    episodes: eps,
+    cover: vd.series_cover || vd.cover_url || episodes[0].cover || '',
+    description: vd.series_intro || '',
+    total: episodes.length,
+    episodes,
+    source,
   };
+}
+
+async function fetchEpisodeListFresh(seriesId, { deadline = Date.now() + 24000 } = {}) {
+  const sid = String(seriesId);
+  const limit = deadline || Date.now() + 24000;
+  const reasons = [];
+  try {
+    const app = require('./app-source');
+    const vd = await app.fetchAppEpisodeList(sid, { deadline: Math.min(limit, Date.now() + 14000) });
+    return parseAppEpisodeDirectory(vd, sid, 'app');
+  } catch (error) {
+    reasons.push(`App 详情（${error.code ? sourceFailure('app', error).message : error.message}）`);
+  }
+  try {
+    const web = await fetchEpisodeListFromWeb(sid, limit);
+    if (web.episode_count ? web.total < web.episode_count : web.total <= 3) {
+      throw new Error('分集目录不完整');
+    }
+    return web;
+  } catch (error) {
+    reasons.push(`官网目录（${error.message}）`);
+  }
+  try {
+    const response = await apiCall('/novel/player/multi_video_detail/preload/v1', {
+      biz_param: DETAIL_BIZ_PARAM, dr_scene: 'preload', series_id: sid,
+    }, 1, 4500, limit);
+    if (response?.code !== 0) throw Object.assign(new Error('备用接口拒绝请求'), { code: 'BUSINESS_REJECTED' });
+    return parseAppEpisodeDirectory(response.data?.[sid]?.video_data, sid, 'app-preload');
+  } catch (error) {
+    const reason = /不一致|不完整/.test(error.message) ? error.message : sourceFailure('app', error).message;
+    reasons.push(`App 目录备用接口（${reason}）`);
+    throw new Error(`分集目录读取失败：${reasons.join('；')}`);
+  }
 }
 
 /**
@@ -627,7 +658,9 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
     if (String(vid).startsWith('custom:') || String(sid).startsWith('custom:')) return require('./custom-source').fetchPlayUrlSingle(vid, sid, options);
     if (String(vid).startsWith('hema:') || String(sid).startsWith('hema:')) return require('./hema').fetchPlayUrlSingle(vid, sid);
     if (String(vid).startsWith('xifan:') || String(sid).startsWith('xifan:')) return require('./xifan').fetchPlayUrlSingle(vid, sid);
-    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}`;
+    const catalogEpisode = responseCache.get(`episodes:${sid}`)?.value.episodes.find(ep => ep.vid === String(vid));
+    const contentType = String(options.contentType ?? catalogEpisode?.content_type) === '1001' ? '1001' : '1004';
+    const cacheKey = `play:app-hd:${sid || ''}:${vid}:${quality}:${contentType}`;
     return await cachedRequest(cacheKey, 30000, async () => {
       const app = require('./app-source');
       const routes = [
@@ -639,7 +672,7 @@ async function fetchPlayUrlSingle(vid, sid, options = {}) {
       const deadline = Date.now() + 26000;
       for (const [route, fetchModel] of routes) {
         try {
-          const result = await fetchModel(String(vid), { quality, preferQuality: true, deadline });
+          const result = await fetchModel(String(vid), { quality, preferQuality: true, deadline, contentType });
           return attempts.length ? { ...result, attempts } : result;
         } catch (error) {
           const failure = sourceFailure('app', error);
